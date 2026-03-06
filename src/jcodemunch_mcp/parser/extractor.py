@@ -294,31 +294,42 @@ def _extract_preceding_comments(node, source_bytes: bytes) -> str:
 
 def _clean_comment_markers(text: str) -> str:
     """Clean comment markers from docstring."""
+    # POD block: strip directive lines (=pod, =head1, =cut, etc.), keep content
+    if text.lstrip().startswith("="):
+        content_lines = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("="):
+                continue
+            content_lines.append(stripped)
+        return "\n".join(content_lines).strip()
+
     lines = text.split("\n")
     cleaned = []
-    
     for line in lines:
         line = line.strip()
-        # Remove leading comment markers
+        # Remove leading comment markers (order matters: longer prefixes first)
         if line.startswith("/**"):
             line = line[3:]
-        elif line.startswith("/*"):
-            line = line[2:]
+        elif line.startswith("//!"):
+            line = line[3:]
         elif line.startswith("///"):
             line = line[3:]
         elif line.startswith("//"):
             line = line[2:]
-        elif line.startswith("//!"):
-            line = line[3:]
+        elif line.startswith("/*"):
+            line = line[2:]
         elif line.startswith("*"):
             line = line[1:]
-        
+        elif line.startswith("#"):
+            line = line[1:]
+
         # Remove trailing */
         if line.endswith("*/"):
             line = line[:-2]
-        
+
         cleaned.append(line.strip())
-    
+
     return "\n".join(cleaned).strip()
 
 

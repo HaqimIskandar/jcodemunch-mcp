@@ -93,7 +93,7 @@ def should_skip_file(path: str) -> bool:
 def discover_source_files(
     tree_entries: list[dict],
     gitignore_content: Optional[str] = None,
-    max_files: int = 500,
+    max_files: int = 2000,  # Lower than local (10k) due to per-file GitHub API calls
     max_size: int = 500 * 1024  # 500KB
 ) -> list[str]:
     """Discover source files from tree entries.
@@ -388,8 +388,8 @@ async def index_repo(
         if warnings:
             result["warnings"] = warnings
 
-        if len(source_files) >= 500:
-            result["warnings"] = warnings + ["Repository has many files; indexed first 500"]
+        if len(source_files) >= 2000:
+            result["warnings"] = warnings + ["Repository has many files; indexed first 2,000 (priority: src/, lib/, pkg/, cmd/, internal/)"]
 
         return result
     
