@@ -86,6 +86,7 @@ LANGUAGE_EXTENSIONS = {
     ".sh": "bash",
     ".bash": "bash",
     ".nix": "nix",
+    ".vue": "vue",
 }
 
 
@@ -728,6 +729,24 @@ NIX_SPEC = LanguageSpec(
 )
 
 
+# Vue SFC specification
+# NOTE: Vue Single-File Components are parsed by _parse_vue_symbols() in
+# extractor.py, which extracts the <script>/<script setup> block and re-parses
+# it as JavaScript or TypeScript (detected from the lang="ts" attribute).
+VUE_SPEC = LanguageSpec(
+    ts_language="vue",
+    symbol_node_types={},
+    name_fields={},
+    param_fields={},
+    return_type_fields={},
+    docstring_strategy="preceding_comment",
+    decorator_node_type=None,
+    container_node_types=[],
+    constant_patterns=[],
+    type_patterns=[],
+)
+
+
 # Language registry
 LANGUAGE_REGISTRY = {
     "python": PYTHON_SPEC,
@@ -752,6 +771,7 @@ LANGUAGE_REGISTRY = {
     "gleam": GLEAM_SPEC,
     "bash": BASH_SPEC,
     "nix": NIX_SPEC,
+    "vue": VUE_SPEC,
 }
 
 logger = logging.getLogger(__name__)

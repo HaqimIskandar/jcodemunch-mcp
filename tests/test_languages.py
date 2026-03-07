@@ -1387,3 +1387,77 @@ def test_parse_nix():
 
     from jcodemunch_mcp.parser.languages import get_language_for_path
     assert get_language_for_path("default.nix") == "nix"
+
+
+VUE_JS_SOURCE = '''<template>
+  <div>{{ message }}</div>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+
+// Greet a user
+function greet(name) {
+  return `Hello, ${name}`
+}
+
+class MyComponent {
+  mounted() {}
+}
+</script>
+'''
+
+VUE_TS_SOURCE = '''<template><div /></template>
+<script setup lang="ts">
+import { ref } from 'vue'
+
+interface User { name: string }
+
+// Get the user name
+function getName(user: User): string {
+  return user.name
+}
+</script>
+'''
+
+
+def test_parse_vue_js():
+    """Test Vue SFC parsing with JavaScript script block."""
+    symbols = parse_file(VUE_JS_SOURCE, "App.vue", "vue")
+
+    fn = next((s for s in symbols if s.name == "greet"), None)
+    assert fn is not None
+    assert fn.kind == "function"
+    assert fn.language == "vue"
+    assert "Greet a user" in fn.docstring
+    assert fn.line == 9  # correct line in .vue file
+
+    cls = next((s for s in symbols if s.name == "MyComponent"), None)
+    assert cls is not None
+    assert cls.kind == "class"
+
+    from jcodemunch_mcp.parser.languages import get_language_for_path
+    assert get_language_for_path("App.vue") == "vue"
+
+
+def test_parse_vue_ts():
+    """Test Vue SFC parsing with TypeScript script block (lang="ts")."""
+    symbols = parse_file(VUE_TS_SOURCE, "User.vue", "vue")
+
+    iface = next((s for s in symbols if s.name == "User"), None)
+    assert iface is not None
+    assert iface.kind == "type"
+    assert iface.language == "vue"
+
+    fn = next((s for s in symbols if s.name == "getName"), None)
+    assert fn is not None
+    assert fn.kind == "function"
+    assert "string" in fn.signature
+    assert "Get the user name" in fn.docstring
+
+
+def test_parse_vue_no_script():
+    """Test Vue SFC with no script block returns empty symbol list."""
+    source = "<template><div>hello</div></template>"
+    symbols = parse_file(source, "Static.vue", "vue")
+    assert symbols == []

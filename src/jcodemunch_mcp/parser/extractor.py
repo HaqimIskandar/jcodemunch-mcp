@@ -32,6 +32,8 @@ def parse_file(content: str, filename: str, language: str) -> list[Symbol]:
         symbols = _parse_blade_symbols(source_bytes, filename)
     elif language == "nix":
         symbols = _parse_nix_symbols(source_bytes, filename)
+    elif language == "vue":
+        symbols = _parse_vue_symbols(source_bytes, filename)
     else:
         spec = LANGUAGE_REGISTRY[language]
         symbols = _parse_with_spec(source_bytes, filename, language, spec)
@@ -1481,3 +1483,66 @@ def _extract_nix_binding(node, source_bytes: bytes, filename: str, symbols: list
         byte_length=len(sym_bytes),
         content_hash=compute_content_hash(sym_bytes),
     ))
+
+
+# ---------------------------------------------------------------------------
+# Vue SFC custom symbol extractor
+# ---------------------------------------------------------------------------
+
+def _parse_vue_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
+    """Extract symbols from Vue Single-File Components (.vue).
+
+    Locates the <script> or <script setup> block using the tree-sitter Vue
+    grammar, determines whether it is JavaScript or TypeScript (via the
+    lang="ts" attribute), then re-parses the raw script content with the
+    appropriate JS/TS spec.  Line numbers are offset to match positions in
+    the original .vue file.
+    """
+    from tree_sitter_language_pack import get_parser as _get_parser
+    vue_parser = _get_parser("vue")
+    tree = vue_parser.parse(source_bytes)
+
+    # Find the first <script> or <script setup> element
+    script_node = None
+    for child in tree.root_node.children:
+        if child.type == "script_element":
+            script_node = child
+            break
+
+    if script_node is None:
+        return []
+
+    # Detect language from start_tag attributes (lang="ts" / lang="tsx")
+    lang = "javascript"
+    start_tag = script_node.child_by_field_name("start_tag") or next(
+        (c for c in script_node.children if c.type == "start_tag"), None
+    )
+    if start_tag:
+        for attr in start_tag.children:
+            if attr.type == "attribute":
+                attr_text = source_bytes[attr.start_byte:attr.end_byte].decode("utf-8", errors="replace")
+                if 'lang="ts"' in attr_text or "lang='ts'" in attr_text:
+                    lang = "typescript"
+                    break
+                if 'lang="tsx"' in attr_text or "lang='tsx'" in attr_text:
+                    lang = "tsx"
+                    break
+
+    # Extract raw_text content and its line offset within the .vue file
+    raw_node = next((c for c in script_node.children if c.type == "raw_text"), None)
+    if raw_node is None:
+        return []
+
+    script_content = source_bytes[raw_node.start_byte:raw_node.end_byte]
+    line_offset = raw_node.start_point[0]  # 0-based line of script content start
+
+    # Parse the script block with the JS/TS spec
+    spec = LANGUAGE_REGISTRY[lang]
+    symbols = _parse_with_spec(script_content, filename, lang, spec)
+
+    # Adjust line numbers to be relative to the .vue file
+    for sym in symbols:
+        sym.line = sym.line + line_offset
+        sym.end_line = sym.end_line + line_offset
+        sym.language = "vue"
+    return symbols
