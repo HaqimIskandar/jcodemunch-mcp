@@ -5,6 +5,7 @@ All notable changes to jcodemunch-mcp are documented here.
 ## [Unreleased]
 
 ### Added
+- **JS/TS const extraction** — top-level `const` and `export const` declarations in JavaScript, TypeScript, and TSX are now indexed as `constant` symbols. Arrow functions and function expressions assigned to consts are correctly skipped (handled by existing function extraction). Accepts all identifier naming conventions for JS/TS.
 - **`index_file` tool** (PR #126, credit: @thellMa) — re-index a single file instantly after editing. Locates the correct index by scanning `source_root` of all indexed repos (picks most specific match), validates security, computes hash + mtime, and exits early if the file is unchanged. Parses with tree-sitter, runs context providers, and calls `incremental_save()` for a surgical single-file update. Registered as a new MCP tool with `path`, `use_ai_summaries`, and `context_providers` parameters.
 - **mtime optimization** (PR #126, credit: @thellMa) — `index_folder` and `index_repo` now check file modification time (`st_mtime_ns`) before reading or hashing. Files with unchanged mtimes are skipped entirely; hashes are computed lazily only for files whose mtime changed. Indexes store a `file_mtimes` dict; old indexes without mtime data fall back to hash-all for backward compatibility.
 - **`watch-claude` CLI subcommand** — auto-discover and watch Claude Code worktrees via two complementary modes:
