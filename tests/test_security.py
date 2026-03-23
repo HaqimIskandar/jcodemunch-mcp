@@ -260,13 +260,31 @@ class TestMaxIndexFilesConfig:
         with patch.dict(os.environ, {}, clear=True):
             assert get_max_index_files() == DEFAULT_MAX_INDEX_FILES
 
-    def test_reads_env_override(self):
-        with patch.dict(os.environ, {MAX_INDEX_FILES_ENV_VAR: "1234"}, clear=True):
-            assert get_max_index_files() == 1234
+    def test_reads_config_override(self):
+        from jcodemunch_mcp import config as config_module
 
-    def test_invalid_env_falls_back_to_default(self):
-        with patch.dict(os.environ, {MAX_INDEX_FILES_ENV_VAR: "invalid"}, clear=True):
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["max_index_files"] = 1234
+            assert get_max_index_files() == 1234
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
+
+    def test_invalid_config_falls_back_to_default(self):
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["max_index_files"] = "invalid"
             assert get_max_index_files() == DEFAULT_MAX_INDEX_FILES
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
     def test_non_positive_explicit_value_is_rejected(self):
         with pytest.raises(ValueError, match="positive integer"):
@@ -278,23 +296,42 @@ class TestMaxFolderFilesConfig:
         assert DEFAULT_MAX_FOLDER_FILES < DEFAULT_MAX_INDEX_FILES
 
     def test_defaults_when_env_is_unset(self):
-        with patch.dict(os.environ, {}, clear=True):
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
             assert get_max_folder_files() == DEFAULT_MAX_FOLDER_FILES
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
-    def test_folder_specific_env_var_takes_priority(self):
-        env = {MAX_FOLDER_FILES_ENV_VAR: "500", MAX_INDEX_FILES_ENV_VAR: "9999"}
-        with patch.dict(os.environ, env, clear=True):
+    def test_folder_config_takes_priority(self):
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["max_folder_files"] = 500
             assert get_max_folder_files() == 500
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
-    def test_falls_back_to_legacy_env_var(self):
-        env = {MAX_INDEX_FILES_ENV_VAR: "1234"}
-        with patch.dict(os.environ, env, clear=True):
-            assert get_max_folder_files() == 1234
+    def test_invalid_folder_config_falls_back_to_default(self):
+        from jcodemunch_mcp import config as config_module
 
-    def test_invalid_folder_env_falls_back_to_legacy(self):
-        env = {MAX_FOLDER_FILES_ENV_VAR: "bad", MAX_INDEX_FILES_ENV_VAR: "999"}
-        with patch.dict(os.environ, env, clear=True):
-            assert get_max_folder_files() == 999
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["max_folder_files"] = -1
+            assert get_max_folder_files() == DEFAULT_MAX_FOLDER_FILES
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
     def test_both_invalid_returns_default(self):
         env = {MAX_FOLDER_FILES_ENV_VAR: "bad", MAX_INDEX_FILES_ENV_VAR: "also_bad"}
@@ -309,58 +346,77 @@ class TestMaxFolderFilesConfig:
             get_max_folder_files(0)
 
 
-# --- Extra Ignore Patterns (JCODEMUNCH_EXTRA_IGNORE_PATTERNS) ---
+# --- Extra Ignore Patterns (extra_ignore_patterns config) ---
 
 class TestGetExtraIgnorePatterns:
-    def test_no_env_no_call_returns_empty(self):
-        with patch.dict(os.environ, {}, clear=True):
+    def test_no_config_no_call_returns_empty(self):
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
             assert get_extra_ignore_patterns() == []
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
     def test_call_patterns_only(self):
-        with patch.dict(os.environ, {}, clear=True):
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
             result = get_extra_ignore_patterns(["*.log", "tmp/"])
             assert result == ["*.log", "tmp/"]
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
-    def test_env_comma_separated(self):
-        env = {EXTRA_IGNORE_PATTERNS_ENV_VAR: "**/scrapes/**, **/images/**"}
-        with patch.dict(os.environ, env, clear=True):
+    def test_config_patterns(self):
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["extra_ignore_patterns"] = ["**/scrapes/**", "*.png"]
             result = get_extra_ignore_patterns()
             assert "**/scrapes/**" in result
-            assert "**/images/**" in result
+            assert "*.png" in result
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
-    def test_env_json_array(self):
-        import json
-        patterns = ["**/scrapes/**", "*.png"]
-        env = {EXTRA_IGNORE_PATTERNS_ENV_VAR: json.dumps(patterns)}
-        with patch.dict(os.environ, env, clear=True):
-            result = get_extra_ignore_patterns()
-            assert result == patterns
+    def test_config_and_call_are_merged(self):
+        from jcodemunch_mcp import config as config_module
 
-    def test_env_and_call_are_merged(self):
-        env = {EXTRA_IGNORE_PATTERNS_ENV_VAR: "global/"}
-        with patch.dict(os.environ, env, clear=True):
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["extra_ignore_patterns"] = ["global/"]
             result = get_extra_ignore_patterns(["local/"])
             assert "global/" in result
             assert "local/" in result
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
-    def test_env_patterns_come_first(self):
-        env = {EXTRA_IGNORE_PATTERNS_ENV_VAR: "first/"}
-        with patch.dict(os.environ, env, clear=True):
-            result = get_extra_ignore_patterns(["second/"])
-            assert result.index("first/") < result.index("second/")
+    def test_empty_config_returns_call_only(self):
+        from jcodemunch_mcp import config as config_module
 
-    def test_empty_env_string_returns_call_only(self):
-        env = {EXTRA_IGNORE_PATTERNS_ENV_VAR: ""}
-        with patch.dict(os.environ, env, clear=True):
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["extra_ignore_patterns"] = []
             result = get_extra_ignore_patterns(["only/"])
             assert result == ["only/"]
-
-    def test_invalid_json_falls_back_to_comma_split(self):
-        env = {EXTRA_IGNORE_PATTERNS_ENV_VAR: "a/, b/"}
-        with patch.dict(os.environ, env, clear=True):
-            result = get_extra_ignore_patterns()
-            assert "a/" in result
-            assert "b/" in result
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
 
 # --- Integration: discover_local_files with security ---
@@ -419,17 +475,24 @@ class TestDiscoverLocalFilesSecure:
         assert "main.py" in names
         assert "temp.py" not in names
 
-    def test_respects_env_file_limit(self, tmp_path):
-        """Environment override controls local folder file discovery limit."""
+    def test_respects_config_file_limit(self, tmp_path):
+        """Config controls local folder file discovery limit."""
         from jcodemunch_mcp.tools.index_folder import discover_local_files
+        from jcodemunch_mcp import config as config_module
 
         for i in range(10):
             (tmp_path / f"file{i}.py").write_text(f"x = {i}\n")
 
-        with patch.dict(os.environ, {MAX_FOLDER_FILES_ENV_VAR: "3", MAX_INDEX_FILES_ENV_VAR: "3"}, clear=False):
-            files, *_ = discover_local_files(tmp_path)
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
 
-        assert len(files) == 3
+        try:
+            config_module._GLOBAL_CONFIG["max_folder_files"] = 3
+            files, *_ = discover_local_files(tmp_path)
+            assert len(files) == 3
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
 
     def test_exact_env_file_limit_does_not_report_truncation(self, tmp_path):
         """Exact file-count matches should not be treated as truncation."""
@@ -530,3 +593,76 @@ class TestIndexStoreEncodingSafety:
         result = store.get_symbol_content("test", "repo", "test-py::foo")
         assert result is not None
         assert "def foo():" in result
+
+
+class TestSecurityConfigIntegration:
+    """Test security module uses config.get() instead of env vars."""
+
+    def test_get_max_index_files_uses_config(self, monkeypatch):
+        """get_max_index_files should read from config, not env vars."""
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["max_index_files"] = 15000
+
+            # Env var should be ignored
+            monkeypatch.setenv("JCODEMUNCH_MAX_INDEX_FILES", "5000")
+
+            result = get_max_index_files()
+            assert result == 15000
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
+
+    def test_get_max_folder_files_uses_config(self, monkeypatch):
+        """get_max_folder_files should read from config, not env vars."""
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["max_folder_files"] = 3000
+
+            # Env vars should be ignored
+            monkeypatch.delenv("JCODEMUNCH_MAX_FOLDER_FILES", raising=False)
+            monkeypatch.delenv("JCODEMUNCH_MAX_INDEX_FILES", raising=False)
+
+            result = get_max_folder_files()
+            assert result == 3000
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
+
+    def test_get_extra_ignore_patterns_uses_config(self, monkeypatch):
+        """get_extra_ignore_patterns should read from config, not env vars."""
+        from jcodemunch_mcp import config as config_module
+
+        orig_config = config_module._GLOBAL_CONFIG.copy()
+        config_module._GLOBAL_CONFIG.clear()
+
+        try:
+            config_module._GLOBAL_CONFIG["extra_ignore_patterns"] = ["*.test", "build/"]
+
+            # Env var should be ignored
+            monkeypatch.delenv("JCODEMUNCH_EXTRA_IGNORE_PATTERNS", raising=False)
+
+            result = get_extra_ignore_patterns()
+            assert "*.test" in result
+            assert "build/" in result
+        finally:
+            config_module._GLOBAL_CONFIG.clear()
+            config_module._GLOBAL_CONFIG.update(orig_config)
+
+    def test_get_max_index_files_param_override(self):
+        """Per-call max_files param should still work."""
+        result = get_max_index_files(max_files=5000)
+        assert result == 5000
+
+    def test_get_max_folder_files_param_override(self):
+        """Per-call max_files param should still work."""
+        result = get_max_folder_files(max_files=1000)
+        assert result == 1000

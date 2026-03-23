@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from . import config as _config
+
 
 # --- Package Integrity Check ---
 
@@ -307,10 +309,7 @@ EXTRA_IGNORE_PATTERNS_ENV_VAR = "JCODEMUNCH_EXTRA_IGNORE_PATTERNS"
 
 
 def get_extra_ignore_patterns(call_patterns: Optional[list] = None) -> list:
-    """Return merged extra ignore patterns from env var and per-call list.
-
-    Reads ``JCODEMUNCH_EXTRA_IGNORE_PATTERNS`` (comma-separated string or
-    JSON array), then appends any per-call ``extra_ignore_patterns``.
+    """Return merged extra ignore patterns from config and per-call list.
 
     Args:
         call_patterns: Patterns supplied by the caller (per-call override).
@@ -318,19 +317,11 @@ def get_extra_ignore_patterns(call_patterns: Optional[list] = None) -> list:
     Returns:
         Combined list of gitignore-style pattern strings. Empty list if none.
     """
-    import json as _json
-
-    env_val = os.environ.get(EXTRA_IGNORE_PATTERNS_ENV_VAR, "").strip()
-    env_patterns: list = []
-    if env_val:
-        try:
-            parsed = _json.loads(env_val)
-            if isinstance(parsed, list):
-                env_patterns = [str(p) for p in parsed if p]
-        except (_json.JSONDecodeError, ValueError):
-            env_patterns = [p.strip() for p in env_val.split(",") if p.strip()]
-
-    combined = env_patterns[:]
+    config_patterns = _config.get("extra_ignore_patterns", [])
+    if isinstance(config_patterns, list):
+        combined = config_patterns[:]
+    else:
+        combined = []
     if call_patterns:
         combined.extend(call_patterns)
     return combined
@@ -351,41 +342,30 @@ MAX_FOLDER_FILES_ENV_VAR = "JCODEMUNCH_MAX_FOLDER_FILES"
 
 
 def get_max_index_files(max_files: Optional[int] = None) -> int:
-    """Resolve the maximum indexed file count from arg or environment.
+    """Resolve the maximum indexed file count from arg or config.
 
     Args:
         max_files: Explicit override. Must be a positive integer when provided.
 
     Returns:
-        Positive file-count limit. Falls back to the default if the environment
-        variable is unset or invalid.
+        Positive file-count limit. Falls back to the default if config
+        is unset or invalid.
     """
     if max_files is not None:
         if max_files <= 0:
             raise ValueError("max_files must be a positive integer")
         return max_files
 
-    value = os.environ.get(MAX_INDEX_FILES_ENV_VAR)
-    if value is None:
-        return DEFAULT_MAX_INDEX_FILES
-
-    try:
-        parsed = int(value)
-    except ValueError:
-        return DEFAULT_MAX_INDEX_FILES
-
-    if parsed <= 0:
-        return DEFAULT_MAX_INDEX_FILES
-
-    return parsed
+    value = _config.get("max_index_files", DEFAULT_MAX_INDEX_FILES)
+    if isinstance(value, int) and value > 0:
+        return value
+    return DEFAULT_MAX_INDEX_FILES
 
 
 def get_max_folder_files(max_files: Optional[int] = None) -> int:
     """Resolve the maximum indexed file count for local folder indexing.
 
-    Checks JCODEMUNCH_MAX_FOLDER_FILES first, then falls back to
-    JCODEMUNCH_MAX_INDEX_FILES for backward compatibility.  The default
-    (2,000) is intentionally lower than the GitHub repo default (10,000)
+    The default (2,000) is intentionally lower than the GitHub repo default (10,000)
     because local indexing runs synchronously inside an MCP tool call and
     must complete within the client's timeout window.
 
@@ -400,17 +380,9 @@ def get_max_folder_files(max_files: Optional[int] = None) -> int:
             raise ValueError("max_files must be a positive integer")
         return max_files
 
-    # Check folder-specific env var first, then legacy shared var.
-    for env_var in (MAX_FOLDER_FILES_ENV_VAR, MAX_INDEX_FILES_ENV_VAR):
-        value = os.environ.get(env_var)
-        if value is not None:
-            try:
-                parsed = int(value)
-            except ValueError:
-                continue
-            if parsed > 0:
-                return parsed
-
+    value = _config.get("max_folder_files", DEFAULT_MAX_FOLDER_FILES)
+    if isinstance(value, int) and value > 0:
+        return value
     return DEFAULT_MAX_FOLDER_FILES
 
 
