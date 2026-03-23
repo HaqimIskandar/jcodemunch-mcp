@@ -104,3 +104,56 @@ def _strip_jsonc(text: str) -> str:
             result.append(ch)
             i += 1
     return ''.join(result)
+
+
+def _validate_type(key: str, value: Any, expected_type: type | tuple) -> bool:
+    """Validate value against expected type."""
+    if isinstance(expected_type, tuple):
+        return isinstance(value, expected_type)
+    return isinstance(value, expected_type)
+
+
+def load_config(storage_path: str | None = None) -> None:
+    """Load global config.jsonc. Called once from main()."""
+    global _GLOBAL_CONFIG
+
+    # Determine config path
+    if storage_path:
+        config_path = Path(storage_path) / "config.jsonc"
+    else:
+        config_path = Path.home() / ".code-index" / "config.jsonc"
+
+    # Load config if exists
+    if config_path.exists():
+        try:
+            content = config_path.read_text(encoding="utf-8")
+            stripped = _strip_jsonc(content)
+            loaded = json.loads(stripped)
+
+            # Type validation
+            for key, value in loaded.items():
+                if key in CONFIG_TYPES:
+                    if _validate_type(key, value, CONFIG_TYPES[key]):
+                        _GLOBAL_CONFIG[key] = value
+                    else:
+                        logger.warning(
+                            f"Config key '{key}' has invalid type. "
+                            f"Expected {CONFIG_TYPES[key]}, got {type(value).__name__}. Using default."
+                        )
+                        _GLOBAL_CONFIG[key] = DEFAULTS.get(key)
+                # Ignore unknown keys silently
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse config.jsonc: {e}")
+            _GLOBAL_CONFIG = DEFAULTS.copy()
+        except Exception as e:
+            logger.error(f"Failed to load config.jsonc: {e}")
+            _GLOBAL_CONFIG = DEFAULTS.copy()
+    else:
+        _GLOBAL_CONFIG = DEFAULTS.copy()
+
+
+def get(key: str, default: Any = None, repo: str | None = None) -> Any:
+    """Get config value. If repo is given, uses merged project config."""
+    if repo and repo in _PROJECT_CONFIGS:
+        return _PROJECT_CONFIGS[repo].get(key, default)
+    return _GLOBAL_CONFIG.get(key, default)

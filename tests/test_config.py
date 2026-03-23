@@ -1,5 +1,8 @@
 """Tests for JSONC config parsing."""
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from src.jcodemunch_mcp.config import _strip_jsonc
@@ -66,3 +69,24 @@ class TestConfigDefaults:
         """Should default to empty list (all tools enabled)."""
         from src.jcodemunch_mcp.config import DEFAULTS
         assert DEFAULTS["disabled_tools"] == []
+
+
+class TestConfigLoading:
+    """Test config file loading."""
+
+    def test_missing_file_uses_defaults(self, monkeypatch):
+        """Should use defaults when config file doesn't exist."""
+        from src.jcodemunch_mcp.config import load_config, get, _GLOBAL_CONFIG
+
+        # Clear any existing config
+        _GLOBAL_CONFIG.clear()
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            non_existent = Path(tmpdir) / "nonexistent" / "config.jsonc"
+            monkeypatch.setenv("CODE_INDEX_PATH", str(Path(tmpdir) / "nonexistent"))
+
+            load_config(str(Path(tmpdir) / "nonexistent"))
+
+            assert get("max_folder_files") == 2000
+            assert get("use_ai_summaries") is True
