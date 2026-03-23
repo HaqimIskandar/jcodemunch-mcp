@@ -168,3 +168,37 @@ def test_repo_entry_from_data_source_root_remapped(monkeypatch):
     entry = store._repo_entry_from_data(data)
     assert entry is not None
     assert entry["source_root"].replace("\\", "/") == "/new/root/myproject"
+
+
+def test_index_folder_reverse_remap_finds_existing_index(tmp_path, monkeypatch):
+    """index_folder with a remapped path finds the existing index (no re-index)."""
+    (tmp_path / "hello.py").write_text("def hello(): pass\n")
+    monkeypatch.setenv("JCODEMUNCH_USE_AI_SUMMARIES", "false")
+    storage = str(tmp_path / ".index")
+
+    # Index using the real path
+    result = index_folder(
+        path=str(tmp_path),
+        storage_path=storage,
+        use_ai_summaries=False,
+    )
+    assert result.get("success"), result
+
+    # Pretend the folder lives at a different prefix on the current machine
+    fake_prefix = str(tmp_path.parent / "remapped_root")
+    fake_path = fake_prefix + "/" + tmp_path.name
+
+    # Tell path_map: fake_prefix → real parent prefix
+    monkeypatch.setenv(ENV_VAR, f"{fake_prefix}={str(tmp_path.parent)}")
+
+    # Call index_folder with the fake path — should detect "no changes"
+    result2 = index_folder(
+        path=fake_path,
+        storage_path=storage,
+        use_ai_summaries=False,
+        incremental=True,
+    )
+    assert result2.get("success"), result2
+    assert result2.get("message") == "No changes detected" or result2.get("changed", 0) == 0, (
+        f"Expected no changes, got: {result2}"
+    )

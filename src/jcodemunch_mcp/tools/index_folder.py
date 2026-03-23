@@ -34,6 +34,7 @@ from ..storage import IndexStore
 from ..storage.index_store import _file_hash, _get_git_head
 from ..summarizer import summarize_symbols
 from ..reindex_state import WatcherChange
+from ..path_map import parse_path_map, remap
 
 SKIP_DIRS_REGEX = re.compile("^(" + "|".join(SKIP_DIRECTORIES) + ")$")
 SKIP_FILES_REGEX = re.compile("(" + "|".join(re.escape(p) for p in SKIP_FILES) + ")$")
@@ -354,6 +355,13 @@ def index_folder(
     Returns:
         Dict with indexing results.
     """
+    # Reverse-remap caller-supplied path back to the stored path prefix so that
+    # the hash derived by _local_repo_name matches the index built on the original
+    # machine (or path).  The file walk uses this resolved path too — if the
+    # remapped path doesn't exist locally the existence check below will surface it.
+    _path_pairs = parse_path_map()
+    path = remap(str(Path(path).expanduser()), _path_pairs, reverse=False)
+
     # Resolve folder path
     folder_path = Path(path).expanduser().resolve()
 
