@@ -32,6 +32,7 @@ from ..security import (
 from ..storage import IndexStore
 from ..storage.index_store import _file_hash, _get_git_head
 from ..summarizer import summarize_symbols
+from ..reindex_state import WatcherChange
 
 SKIP_DIRS_REGEX = re.compile("^(" + "|".join(SKIP_DIRECTORIES) + ")$")
 SKIP_FILES_REGEX = re.compile("(" + "|".join(re.escape(p) for p in SKIP_FILES) + ")$")
@@ -328,7 +329,7 @@ def index_folder(
     follow_symlinks: bool = False,
     incremental: bool = True,
     context_providers: bool = True,
-    changed_paths: Optional[list[tuple[str, str]]] = None,
+    changed_paths: Optional[list[WatcherChange]] = None,
 ) -> dict:
     """Index a local folder containing source code.
 
@@ -403,9 +404,33 @@ def index_folder(
             repo_name = _local_repo_name(folder_path)
             owner = "local"
             store = IndexStore(base_path=storage_path)
-            existing_index = store.load_index(owner, repo_name)
 
-            if existing_index is not None:
+            # Determine if watcher provided old_hash via WatcherChange objects.
+            # If so, we can skip loading the index and use the memory-cached hashes.
+            watcher_changes_with_hashes = [
+                c for c in changed_paths
+                if isinstance(c, WatcherChange) and c.old_hash
+            ]
+            use_memory_hash_cache = bool(watcher_changes_with_hashes)
+
+            existing_index = store.load_index(owner, repo_name) if not use_memory_hash_cache else None
+
+            # Build memory hash map from WatcherChange objects (from watcher memory cache)
+            _old_hash_map: dict[str, str] = {}
+            if use_memory_hash_cache:
+                for wc in watcher_changes_with_hashes:
+                    # Use index access for both WatcherChange and legacy tuple compat
+                    change_type = wc[0]
+                    abs_path_str = wc[1]
+                    old_hash = wc[2]
+                    abs_path = Path(abs_path_str)
+                    try:
+                        rel_path = abs_path.relative_to(folder_path).as_posix()
+                    except ValueError:
+                        continue
+                    _old_hash_map[rel_path] = old_hash
+
+            if existing_index is not None or use_memory_hash_cache:
                 # Skip discover_providers on the watcher fast path — provider
                 # detection walks the tree (~500ms) and providers don't change
                 # between file edits.  The initial index_folder call (without
@@ -418,7 +443,18 @@ def index_folder(
                 deleted_files: list[str] = []
                 rel_path_map_fast: dict[str, Path] = {}
 
-                for change_type, abs_path_str in changed_paths:
+                for wc_item in changed_paths:
+                    # Support both WatcherChange (with .change_type/.path/.old_hash)
+                    # and legacy (change_type, path) or (change_type, path, old_hash) tuples
+                    if isinstance(wc_item, WatcherChange):
+                        change_type = wc_item.change_type
+                        abs_path_str = wc_item.path
+                        old_hash = wc_item.old_hash
+                    else:
+                        change_type = wc_item[0]
+                        abs_path_str = wc_item[1]
+                        old_hash = wc_item[2] if len(wc_item) > 2 else ""
+
                     abs_path = Path(abs_path_str)
                     try:
                         rel_path = abs_path.relative_to(folder_path).as_posix()
@@ -430,10 +466,10 @@ def index_folder(
                         continue
 
                     if change_type == "deleted":
-                        if existing_index.has_source_file(rel_path):
+                        if existing_index is not None and existing_index.has_source_file(rel_path):
                             deleted_files.append(rel_path)
                     elif change_type == "added":
-                        if not existing_index.has_source_file(rel_path):
+                        if existing_index is None or not existing_index.has_source_file(rel_path):
                             new_files.append(rel_path)
                             rel_path_map_fast[rel_path] = abs_path
                         else:
@@ -458,7 +494,14 @@ def index_folder(
                 # For "modified" files, compare hash against stored hash —
                 # if content is identical (e.g. touch, save-without-change),
                 # skip re-parsing and just update the mtime.
-                old_hashes = existing_index.file_hashes or {}
+                # Use memory cache (_old_hash_map) if available, otherwise fall back to
+                # the index's stored hashes.
+                old_hashes: dict[str, str]
+                if use_memory_hash_cache:
+                    old_hashes = _old_hash_map
+                else:
+                    _idx = existing_index  # type: ignore[assignment]
+                    old_hashes = _idx.file_hashes or {}
                 actually_changed: list[str] = []
                 raw_files_subset: dict[str, str] = {}
                 subset_hashes: dict[str, str] = {}
