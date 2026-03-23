@@ -121,6 +121,9 @@ You can also add the same block to a project-level `CLAUDE.md` in your repo root
 **Index seems stale across the whole project**
 → Re-run `index_folder` with `incremental: false` to force a full rebuild, or call `invalidate_cache`.
 
+**Not sure what's configured?**
+→ Run `jcodemunch-mcp config` to see all effective settings at a glance. Add `--check` to also verify that your AI provider package is installed and your index storage is writable.
+
 ---
 
 ## Keeping the index fresh (large repos)
@@ -204,6 +207,28 @@ All standard watch options work with `watch-claude`:
 ```bash
 jcodemunch-mcp watch-claude --repos ~/project --debounce 5000 --no-ai-summaries --follow-symlinks
 ```
+
+---
+
+## Checking your configuration
+
+Run the built-in diagnostic at any time:
+
+```bash
+jcodemunch-mcp config          # print all effective settings
+jcodemunch-mcp config --check  # also validate prerequisites
+```
+
+The output is grouped into four sections:
+
+| Section | What it shows |
+|---------|--------------|
+| **Core** | Index storage path, file caps, staleness threshold |
+| **AI Summarizer** | Which provider is active (Anthropic / Gemini / Local LLM / none), relevant model vars |
+| **HTTP Transport** | Transport mode; HOST/PORT/TOKEN/rate-limit only shown when not in stdio mode |
+| **Performance & Privacy** | Stats write interval, telemetry sharing, source-root redaction |
+
+`--check` verifies: index storage is writable, the active AI provider's package is installed (`anthropic`, `google-generativeai`, or `httpx`), and HTTP transport packages (`uvicorn`, `starlette`, `anyio`) are present when HTTP mode is configured. Exits non-zero if anything is missing.
 
 ---
 

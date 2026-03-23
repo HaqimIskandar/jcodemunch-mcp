@@ -195,6 +195,38 @@ Use jcodemunch-mcp for code lookup whenever available. Prefer symbol search, out
 
 ---
 
+## Configuration
+
+All settings are controlled by environment variables. Defaults are chosen so that a fresh install works without touching any of them.
+
+To see the current effective configuration:
+
+```bash
+jcodemunch-mcp config           # show all settings
+jcodemunch-mcp config --check   # also verify prerequisites
+```
+
+`--check` validates that your AI provider package is installed, your index storage path is writable, and HTTP transport packages are present if you're using HTTP mode. Exits non-zero on any failure — useful for CI/CD or first-run scripts.
+
+### Key variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CODE_INDEX_PATH` | `~/.code-index/` | Where indexes are stored |
+| `JCODEMUNCH_USE_AI_SUMMARIES` | `true` | Set `false` to disable AI summaries globally |
+| `ANTHROPIC_API_KEY` | — | Enables Claude Haiku summaries (`pip install jcodemunch-mcp[anthropic]`) |
+| `GOOGLE_API_KEY` | — | Enables Gemini Flash summaries (`pip install jcodemunch-mcp[gemini]`) |
+| `OPENAI_API_BASE` | — | Local LLM endpoint (Ollama, LM Studio) |
+| `JCODEMUNCH_TRANSPORT` | `stdio` | Set `sse` or `streamable-http` for HTTP mode |
+| `JCODEMUNCH_HTTP_TOKEN` | — | Bearer token for HTTP transport auth |
+| `JCODEMUNCH_RATE_LIMIT` | `0` | Max requests/min per IP in HTTP mode (0 = off) |
+| `JCODEMUNCH_MAX_FOLDER_FILES` | 2,000 | File cap for `index_folder` |
+| `JCODEMUNCH_SHARE_SAVINGS` | `1` | Set `0` to disable anonymous token-savings telemetry |
+
+AI provider priority: Anthropic → Gemini → local LLM → signature fallback. The first key that is set wins. `jcodemunch-mcp config` shows which provider is active.
+
+---
+
 ## Best for
 
 * large repositories

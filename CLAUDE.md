@@ -9,7 +9,7 @@
 ## Key Files
 ```
 src/jcodemunch_mcp/
-  server.py                    # MCP tool definitions + call_tool dispatcher (async)
+  server.py                    # MCP tool definitions + call_tool dispatcher (async); also hosts _run_config(), _make_auth_middleware(), _make_rate_limit_middleware(), and CLI subcommand dispatch
   security.py                  # Path validation, skip patterns, get_max_folder_files(), get_max_index_files()
   parser/
     languages.py               # LANGUAGE_REGISTRY, extension → language map, LanguageSpec
@@ -40,6 +40,16 @@ src/jcodemunch_mcp/
     find_references.py           # NEW v1.3.0 — find all files that reference a given identifier
     _utils.py
 ```
+
+## CLI Subcommands
+| Subcommand | Purpose |
+|------------|---------|
+| `serve` (default) | Run the MCP server (`stdio`, `sse`, or `streamable-http`) |
+| `watch <paths>` | File watcher — auto-reindex on change |
+| `watch-claude` | Auto-discover and watch Claude Code worktrees |
+| `hook-event create\|remove` | Record a worktree lifecycle event (called by Claude Code hooks) |
+| `config` | Print effective configuration grouped by concern |
+| `config --check` | Also validate prerequisites (storage writable, AI pkg installed, HTTP pkgs present) |
 
 ## Architecture Notes
 - `index_folder` is **synchronous** — dispatched via `asyncio.to_thread()` in server.py to avoid blocking the event loop (bug fixed in v1.1.4; was root cause of MCP timeouts)
