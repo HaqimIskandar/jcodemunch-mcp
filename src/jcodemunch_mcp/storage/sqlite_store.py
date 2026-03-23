@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple, Optional, cast
 
 from ..parser.symbols import Symbol
+from ..path_map import parse_path_map, remap
 
 if TYPE_CHECKING:
     from .index_store import CodeIndex
@@ -817,10 +818,11 @@ class SQLiteIndexStore:
 
     def list_repos(self) -> list[dict]:
         """List all indexed repositories (scans .db files only)."""
+        _pairs = parse_path_map()
         repos = []
         for db_file in self.base_path.glob("*.db"):
             try:
-                entry = self._list_repo_from_db(db_file)
+                entry = self._list_repo_from_db(db_file, _pairs)
                 if entry:
                     repos.append(entry)
             except Exception:
@@ -828,8 +830,10 @@ class SQLiteIndexStore:
         repos.sort(key=lambda repo: repo["repo"])
         return repos
 
-    def _list_repo_from_db(self, db_path: Path) -> Optional[dict]:
+    def _list_repo_from_db(self, db_path: Path, _pairs: Optional[list] = None) -> Optional[dict]:
         """Read repo metadata from a .db file for list_repos."""
+        if _pairs is None:
+            _pairs = parse_path_map()
         conn = self._connect(db_path)
         try:
             meta = self._read_meta(conn)
@@ -850,7 +854,7 @@ class SQLiteIndexStore:
             "index_version": int(meta.get("index_version", "0")),
             "git_head": meta.get("git_head", ""),
             "display_name": meta.get("display_name", ""),
-            "source_root": meta.get("source_root", ""),
+            "source_root": remap(meta.get("source_root", ""), _pairs),
         }
 
     def delete_index(self, owner: str, name: str) -> bool:

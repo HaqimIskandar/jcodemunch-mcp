@@ -35,6 +35,7 @@ from ..storage import IndexStore
 from ..storage.index_store import _file_hash, _get_git_head
 from ..summarizer import summarize_symbols
 from ..reindex_state import WatcherChange
+from ..path_map import parse_path_map, remap
 
 SKIP_DIRS_REGEX = re.compile("^(" + "|".join(SKIP_DIRECTORIES) + ")$")
 SKIP_FILES_REGEX = re.compile("(" + "|".join(re.escape(p) for p in SKIP_FILES) + ")$")
@@ -449,7 +450,8 @@ def index_folder(
         # When the watcher provides the exact change set, skip full directory
         # discovery (~3s on Windows) and only process the affected files.
         if changed_paths and incremental:
-            repo_name = _local_repo_name(folder_path)
+            _pairs = parse_path_map()
+            repo_name = _local_repo_name(Path(remap(str(folder_path), _pairs, reverse=True)))
             owner = "local"
             store = IndexStore(base_path=storage_path)
 
@@ -710,7 +712,8 @@ def index_folder(
             logger.info("Active context providers: %s", names)
 
         # Create repo identifier from folder path
-        repo_name = _local_repo_name(folder_path)
+        _pairs = parse_path_map()
+        repo_name = _local_repo_name(Path(remap(str(folder_path), _pairs, reverse=True)))
         owner = "local"
         store = IndexStore(base_path=storage_path)
         existing_index = store.load_index(owner, repo_name)

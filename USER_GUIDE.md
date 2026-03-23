@@ -179,6 +179,20 @@ With optional GitHub auth and AI summaries:
 * `GOOGLE_MODEL`
   Overrides the default Gemini model.
 
+* `JCODEMUNCH_PATH_MAP`
+  Remaps stored path prefixes so an index built on one machine can be reused on
+  another without re-indexing. Format: `orig1=new1,orig2=new2` where `orig` is
+  the prefix as stored in the index (the path used at index time) and `new` is
+  the equivalent path on the current machine. Each pair is split on the last `=`,
+  so `=` signs within path components are preserved. Pairs are comma-separated;
+  path components containing commas are not supported. The first matching prefix
+  wins — list more-specific prefixes before broader ones when they overlap.
+
+  Example (Linux index reused on Windows):
+  ```
+  JCODEMUNCH_PATH_MAP=/home/user/Dev=C:\Users\user\Dev
+  ```
+
 * `JCODEMUNCH_CONTEXT_PROVIDERS=0`
   Disables context-provider enrichment during indexing.
 
@@ -318,7 +332,7 @@ Use this when:
 
 ```json
 index_folder: { "path": "/home/user/myproject" }
-list_repos: {}
+resolve_repo: { "path": "/home/user/myproject" }
 get_repo_outline: { "repo": "myproject" }
 search_symbols: { "repo": "myproject", "query": "main" }
 ```
@@ -483,6 +497,7 @@ These IDs stay stable across re-indexing as long as path, qualified name, and ki
 | `index_folder` | Index a local folder | `path`, `incremental`, `use_ai_summaries`, `extra_ignore_patterns`, `follow_symlinks` |
 | `index_file` | Re-index one file — faster than `index_folder` for surgical updates | `path`, `use_ai_summaries`, `context_providers` |
 | `list_repos` | List all indexed repositories | — |
+| `resolve_repo` | Resolve a filesystem path to its repo ID — O(1) lookup, preferred over `list_repos` when you know the path | `path` |
 | `invalidate_cache` | Delete cached index and force a full re-index | `repo` |
 | `wait_for_fresh` | Wait for in-progress watcher reindex to finish before proceeding | `repo`, `timeout_ms` |
 

@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 from .. import config as _config
 from ..parser.symbols import Symbol
+from ..path_map import parse_path_map, remap
 from .sqlite_store import SQLiteIndexStore
 
 logger = logging.getLogger(__name__)
@@ -614,7 +615,7 @@ class IndexStore:
         """Compute language->file_count from serialized symbols."""
         return self._languages_from_file_languages(self._file_languages_from_symbols(symbols))
 
-    def _repo_entry_from_data(self, data: dict) -> Optional[dict]:
+    def _repo_entry_from_data(self, data: dict, _pairs=None) -> Optional[dict]:
         """Build a repo listing entry from index or sidecar data."""
         repo_id = data.get("repo")
         if not repo_id:
@@ -642,20 +643,21 @@ class IndexStore:
             if _config.get("redact_source_root", False):
                 repo_entry["source_root"] = data.get("display_name", "") or ""
             else:
-                repo_entry["source_root"] = data["source_root"]
+                repo_entry["source_root"] = remap(data["source_root"], _pairs if _pairs is not None else parse_path_map())
         return repo_entry
 
     def list_repos(self) -> list[dict]:
         """List all indexed repositories (SQLite + legacy JSON)."""
         repos = []
         seen_slugs: set[str] = set()
+        _pairs = parse_path_map()
 
         # Pass 1: SQLite databases
         for db_file in self.base_path.glob("*.db"):
             slug = db_file.stem
             seen_slugs.add(slug)
             try:
-                entry = self._sqlite._list_repo_from_db(db_file)
+                entry = self._sqlite._list_repo_from_db(db_file, _pairs)
                 if entry:
                     repos.append(entry)
             except Exception:
@@ -679,7 +681,7 @@ class IndexStore:
             try:
                 with open(meta_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                entry = self._repo_entry_from_data(data)
+                entry = self._repo_entry_from_data(data, _pairs)
                 if entry:
                     repos.append(entry)
             except Exception:
@@ -693,7 +695,7 @@ class IndexStore:
             try:
                 with open(index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                entry = self._repo_entry_from_data(data)
+                entry = self._repo_entry_from_data(data, _pairs)
                 if entry:
                     repos.append(entry)
             except Exception:

@@ -42,6 +42,7 @@ ENV_VAR_MAPPING = {
     "JCODEMUNCH_CLAUDE_POLL_INTERVAL": "claude_poll_interval",
     "JCODEMUNCH_LOG_LEVEL": "log_level",
     "JCODEMUNCH_LOG_FILE": "log_file",
+    "JCODEMUNCH_PATH_MAP": "path_map",
 }
 
 DEFAULTS = {
@@ -72,6 +73,7 @@ DEFAULTS = {
     "share_savings": True,
     "summarizer_concurrency": 4,
     "allow_remote_summarizer": False,
+    "path_map": "",
 }
 
 CONFIG_TYPES = {
@@ -102,6 +104,7 @@ CONFIG_TYPES = {
     "share_savings": bool,
     "summarizer_concurrency": int,
     "allow_remote_summarizer": bool,
+    "path_map": str,
 }
 
 

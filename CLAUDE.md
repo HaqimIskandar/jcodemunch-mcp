@@ -1,9 +1,9 @@
 # jcodemunch-mcp — Project Brief
 
 ## Current State
-- **Version:** 1.10.17 (published to PyPI)
+- **Version:** 1.10.19 (published to PyPI)
 - **INDEX_VERSION:** 4
-- **Tests:** 885 passed, 7 skipped
+- **Tests:** 991 passed, 7 skipped
 - **Python:** >=3.10
 
 ## Key Files
@@ -35,6 +35,7 @@ src/jcodemunch_mcp/
     get_repo_outline.py
     get_context_bundle.py        # Symbol source + file imports in one call
     list_repos.py
+    resolve_repo.py              # O(1) path-to-repo-ID lookup; avoids full list_repos scan
     invalidate_cache.py
     find_importers.py            # NEW v1.3.0 — find all files that import a given file
     find_references.py           # NEW v1.3.0 — find all files that reference a given identifier
@@ -79,6 +80,7 @@ Custom parsers (tree-sitter grammar lacks clean named fields):
 | `JCODEMUNCH_MAX_FOLDER_FILES` | 2,000 | File cap for folder indexing |
 | `JCODEMUNCH_USE_AI_SUMMARIES` | true | Set false/0/no/off to disable AI summaries globally |
 | `JCODEMUNCH_EXTRA_IGNORE_PATTERNS` | — | Always-on gitignore patterns (comma-sep or JSON array); merged with per-call extra_ignore_patterns |
+| `JCODEMUNCH_PATH_MAP` | — | Remap stored path prefixes at retrieval time; format: `orig1=new1,orig2=new2`. Allows an index built on one machine (e.g. Linux `/home/user`) to be used on another (e.g. Windows `D:\Users\user`) without re-indexing |
 | `JCODEMUNCH_STALENESS_DAYS` | 7 | Days before get_repo_outline emits a staleness_warning |
 | `JCODEMUNCH_MAX_RESULTS` | 500 | Hard cap on search_columns result count |
 | `JCODEMUNCH_SHARE_SAVINGS` | 1 | Set 0 to disable anonymous token savings telemetry |
@@ -123,6 +125,8 @@ Custom parsers (tree-sitter grammar lacks clean named fields):
 | #80 | briepace | Folder indexing speedup: prune dirnames[:] at os.walk level → merged v1.2.8 |
 | #82 | paperlinguist | SQL language support with dbt Jinja preprocessing → merged v1.2.6 |
 | #109 | DrHayt | Fix SKIP_DIRS_REGEX missing `$` anchor — prevented prefix-match pruning (e.g. `proto` eating `protoc-gen-*`) → merged |
+| #158 | iEdgir01 | JCODEMUNCH_PATH_MAP — cross-platform path prefix remapping; merged v1.10.18 |
+| #160 | DrHayt | resolve_repo tool — O(1) path-to-repo-ID lookup; merged v1.10.19 |
 
 
 ## Roadmap / Backlog
@@ -191,8 +195,12 @@ Custom parsers (tree-sitter grammar lacks clean named fields):
 | 1.10.11 | UX: `jcodemunch-mcp config` subcommand — prints effective configuration grouped by concern; `--check` validates storage path, AI provider package, and HTTP transport packages |
 | 1.10.12 | UX: `get_repo_outline` now includes `most_imported_files` (top 10 by import in-degree, requires import graph); `get_symbol_diff` MCP description now includes step-by-step branch diff workflow |
 | 1.10.13 | Perf: remove 4-model cost table from per-tool _meta (cost_avoided now returns {}); trim 6 verbose tool descriptions — reduces schema tokens ~249/turn and _meta overhead ~71 tokens/call (×9 tools, compounding) |
+| 1.10.14 | Watcher backpressure + index freshness: memory hash cache (~57ms savings/tick), watcher fast path (~3s → ~50ms on Windows), deferred AI summarization (index queryable immediately), per-repo reindex state with threading.Event signaling, _meta staleness fields on all query responses, wait_for_fresh tool, --freshness-mode=strict CLI flag; 78 regression tests — contributed by MariusAdrian88 (PR #154) |
+| 1.10.15 | Perf: suppress_meta param on all 25 tools — add suppress_meta=true to strip _meta envelope (~100-200 tokens/call savings); injected at list_tools() time via single property dict, stripped in call_tool dispatcher; 3 new tests — requested by Mharbulous (#142) |
 | 1.10.16 | Docs: expand tool reference in USER_GUIDE.md, QUICKSTART.md, and README.md with new tools; add AGENT_HOOKS.md cross-links (PR #155 by gokhanozdemir) |
 | 1.10.17 | CLI: `index-file <path>` subcommand — re-index a single file from the shell; enables PostToolUse hooks for automatic index freshness after agent edits (PR #156 by gokhanozdemir) |
+| 1.10.18 | Feat: JCODEMUNCH_PATH_MAP env var — cross-platform path prefix remapping so an index built on one machine (e.g. Linux /home/user) can be reused on another (e.g. Windows C:\Users\user) without re-indexing; directory-boundary-aware matching, mixed-separator support, =signs in paths; 22 tests — contributed by iEdgir01 (PR #158); fix: remap() returns path unchanged on no-match (prevented Windows separator regression) |
+| 1.10.19 | Feat: resolve_repo tool — O(1) path-to-repo-ID lookup; accepts repo root, worktree, subdirectory, or file path; computes deterministic hash ID and checks index existence directly; returns full metadata when indexed or hint to call index_folder when not; ~200 tokens vs potentially thousands from list_repos; 8 tests — contributed by DrHayt (PR #160) |
 
 ## Maintenance Practices
 

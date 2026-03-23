@@ -10,15 +10,15 @@ from jcodemunch_mcp.server import server, list_tools, call_tool, _coerce_argumen
 
 @pytest.mark.asyncio
 async def test_server_lists_all_tools():
-    """Test that server lists all 26 tools."""
+    """Test that server lists all 27 tools."""
     tools = await list_tools()
 
-    assert len(tools) == 26
+    assert len(tools) == 27
 
     names = {t.name for t in tools}
     expected = {
-        "index_repo", "index_folder", "index_file", "list_repos", "get_file_tree",
-        "get_file_outline", "get_file_content", "get_symbol", "get_symbols",
+        "index_repo", "index_folder", "index_file", "list_repos", "resolve_repo",
+        "get_file_tree", "get_file_outline", "get_file_content", "get_symbol", "get_symbols",
         "search_symbols", "invalidate_cache", "search_text", "get_repo_outline",
         "find_importers", "find_references", "check_references", "search_columns", "get_context_bundle",
         "get_session_stats", "get_dependency_graph", "get_blast_radius",
@@ -636,8 +636,8 @@ async def test_disabled_tools_filtered_from_schema(monkeypatch):
         assert "index_repo" not in tool_names
         assert "search_columns" not in tool_names
         assert "get_file_tree" in tool_names  # Not disabled
-        # Total should be 24 (26 - 2 disabled)
-        assert len(tools) == 24
+        # Total should be 25 (27 - 2 disabled)
+        assert len(tools) == 25
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)
@@ -645,7 +645,7 @@ async def test_disabled_tools_filtered_from_schema(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_disabled_tools_empty_all_tools_present(monkeypatch):
-    """When disabled_tools is empty, all 26 tools are present."""
+    """When disabled_tools is empty, all 27 tools are present."""
     from jcodemunch_mcp import config as config_module
 
     orig_config = config_module._GLOBAL_CONFIG.copy()
@@ -655,7 +655,7 @@ async def test_disabled_tools_empty_all_tools_present(monkeypatch):
         config_module._GLOBAL_CONFIG["disabled_tools"] = []
 
         tools = await list_tools()
-        assert len(tools) == 26
+        assert len(tools) == 27
     finally:
         config_module._GLOBAL_CONFIG.clear()
         config_module._GLOBAL_CONFIG.update(orig_config)

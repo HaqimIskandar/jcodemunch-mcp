@@ -21,6 +21,7 @@ from .tools.index_repo import index_repo
 from .tools.index_folder import index_folder
 from .tools.index_file import index_file
 from .tools.list_repos import list_repos
+from .tools.resolve_repo import resolve_repo
 from .tools.get_file_tree import get_file_tree
 from .tools.get_file_outline import get_file_outline
 from .tools.get_file_content import get_file_content
@@ -43,6 +44,7 @@ from .tools.search_columns import search_columns
 from .tools.get_context_bundle import get_context_bundle
 from .parser.symbols import VALID_KINDS
 from .reindex_state import wait_for_fresh_result, get_reindex_status, await_freshness_if_strict
+from .path_map import ENV_VAR as _PATH_MAP_ENV_VAR
 
 try:
     from .watcher import watch_folders, WatcherError
@@ -54,6 +56,7 @@ except ImportError:
 # Tools excluded from strict freshness mode (don't wait for reindex)
 _EXCLUDED_FROM_STRICT = frozenset({
     "list_repos",
+    "resolve_repo",
     "get_session_stats",
     "wait_for_fresh",
     "index_repo",
@@ -259,6 +262,20 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {}
+            }
+        ),
+        Tool(
+            name="resolve_repo",
+            description="Resolve a filesystem path to its indexed repo identifier. O(1) lookup — faster than list_repos for finding a single repo. Accepts repo root, worktree, subdirectory, or file path.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute filesystem path (repo root, worktree, subdirectory, or file)"
+                    }
+                },
+                "required": ["path"]
             }
         ),
         Tool(
@@ -871,6 +888,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await asyncio.to_thread(
                 functools.partial(list_repos, storage_path=storage_path)
             )
+        elif name == "resolve_repo":
+            result = await asyncio.to_thread(
+                functools.partial(
+                    resolve_repo,
+                    path=arguments["path"],
+                    storage_path=storage_path,
+                )
+            )
         elif name == "get_file_tree":
             result = await asyncio.to_thread(
                 functools.partial(
@@ -1114,7 +1139,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     # get_reindex_status returns spec fields: index_stale, reindex_in_progress,
                     # stale_since_ms, and conditionally reindex_error / reindex_failures.
                     _meta.update(get_reindex_status(repo_arg))
-                elif name not in ("list_repos", "get_session_stats", "index_repo", "index_folder"):
+                elif name not in ("list_repos", "resolve_repo", "get_session_stats", "index_repo", "index_folder"):
                     # For non-repo tools, report global reindex activity
                     from .reindex_state import is_any_reindex_in_progress
                     any_in_progress = is_any_reindex_in_progress()
@@ -1585,6 +1610,8 @@ def _run_config(check: bool = False, init: bool = False) -> None:
     exts = _cfg.get("extra_extensions", {})
     row("extra_extensions", _fmt_list(exts) if exts else dim("(none)"), _detect_source("extra_extensions", {}))
     row("context_providers", str(_cfg.get("context_providers", True)).lower(), _detect_source("context_providers", True))
+    path_map_val = _cfg.get("path_map", "")
+    row("path_map", path_map_val if path_map_val else dim("(none)"), _detect_source("path_map", ""))
 
     # ── Meta Response Control ─────────────────────────────────────────────
     section("Meta Response Control")
