@@ -32,7 +32,7 @@ from ..security import (
     SKIP_FILES
 )
 from ..storage import IndexStore
-from ..storage.index_store import _file_hash, _get_git_head
+from ..storage.index_store import _file_hash, _file_hash_bytes, _get_git_head
 from ..summarizer import summarize_symbols
 from ..reindex_state import WatcherChange
 from ..path_map import parse_path_map, remap
@@ -864,8 +864,9 @@ def index_folder(
             if content is None:
                 continue
 
-            # Compute hash while content is in memory
-            file_hashes[rel_path] = _file_hash(content)
+            # Encode once — reused for both hashing and tree-sitter parsing
+            content_bytes = content.encode("utf-8")
+            file_hashes[rel_path] = _file_hash_bytes(content_bytes)
 
             # Write raw content to cache immediately, then process
             file_dest = store._safe_content_path(content_dir, rel_path)
@@ -879,7 +880,7 @@ def index_folder(
                 # content eligible for GC after this iteration
                 continue
             try:
-                symbols = parse_file(content, rel_path, language)
+                symbols = parse_file(content, rel_path, language, source_bytes=content_bytes)
                 if symbols:
                     all_symbols.extend(symbols)
                     symbols_by_file[rel_path].extend(symbols)

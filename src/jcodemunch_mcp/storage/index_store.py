@@ -46,6 +46,11 @@ def _file_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _file_hash_bytes(content_bytes: bytes) -> str:
+    """SHA-256 hash from pre-encoded bytes — avoids redundant encode() call."""
+    return hashlib.sha256(content_bytes).hexdigest()
+
+
 def _get_git_head(repo_path: Path) -> Optional[str]:
     """Get current HEAD commit hash for a git repo, or None."""
     try:
