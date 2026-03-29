@@ -4,6 +4,14 @@ All notable changes to jcodemunch-mcp are documented here.
 
 ## [Unreleased]
 
+## [1.12.7] - 2026-03-29
+
+### Added
+- **MiniMax and GLM-5 summarizer providers** (PR #184 — contributed by SkaldeStefan) — `MINIMAX_API_KEY` auto-detects MiniMax M2.7 (`api.minimax.io/v1`) and `ZHIPUAI_API_KEY` auto-detects GLM-5 (`api.z.ai`), both via the existing OpenAI-compatible summarizer path. `JCODEMUNCH_SUMMARIZER_PROVIDER` env var added for explicit selection (`anthropic`, `gemini`, `openai`, `minimax`, `glm`, `none`). Auto-detect priority: Anthropic → Gemini → OpenAI-compatible → MiniMax → GLM-5. Remote providers (including MiniMax/GLM) still require `allow_remote_summarizer: true` in `config.jsonc`. `get_provider_name()` exported from `jcodemunch_mcp.summarizer`. `jcodemunch-mcp config` now shows active provider and new MiniMax/GLM sections. 10 new tests (1332 total).
+
+### Fixed
+- **`test_get_provider_name_unknown_falls_back_to_auto` test isolation** — test did not clear higher-priority env vars before auto-detecting MiniMax, causing false `anthropic` result in environments where `ANTHROPIC_API_KEY` is set.
+
 ## [1.12.6] - 2026-03-29
 
 ### Fixed

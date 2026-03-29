@@ -17,9 +17,9 @@ jcodemunch's standard skip patterns (node_modules, __pycache__, etc.).
 
 | Repository | Files Indexed | Symbols Extracted | Baseline Tokens |
 |------------|:------------:|:-----------------:|:--------------:|
-| expressjs/express | 34 | 117 | 73,838 |
-| fastapi/fastapi | 156 | 1,359 | 214,312 |
-| gin-gonic/gin | 40 | 805 | 84,892 |
+| expressjs/express | 165 | 181 | 137,978 |
+| fastapi/fastapi | 951 | 5,325 | 699,425 |
+| gin-gonic/gin | 98 | 1,489 | 187,018 |
 
 ## Query Corpus
 
@@ -46,7 +46,7 @@ production savings are higher than what the benchmark reports.
 
 For each query:
 1. Call `search_symbols(query, max_results=5)` — returns ranked symbol metadata.
-2. Call `get_symbol()` on the top 3 matching symbol IDs — returns full source code.
+2. Call `get_symbol_source()` on the top 3 matching symbol IDs — returns full source code.
 3. **Total tokens** = search response tokens + 3 x symbol source tokens.
 
 AI summaries were **disabled** during benchmarking (signature-only fallback).
@@ -119,10 +119,11 @@ tokens, and latency side-by-side.
 ## Common Misreadings
 
 **"The claim is up to 99%."**
-The primary claim is **95% average** across all 15 task-runs (1,865,210 baseline tokens →
-92,515 jCodeMunch tokens). Individual queries reach 99%+ on small repos with sparse
-symbol matches (e.g., `context bind` on expressjs/express: 99.8%). The 95% aggregate
-is the honest headline; 99% is a per-query ceiling, not a typical result.
+The primary claim is **99.6% average** across all 15 task-runs (5,122,105 baseline tokens →
+19,406 jCodeMunch tokens). Individual queries reach 99.9% on large repos with tight symbol
+matches (e.g., `error exception` on fastapi/fastapi: 99.9%, 801x). The 99.6% aggregate
+is the honest headline across the current index state (express 165 files, fastapi 951 files,
+gin 98 files; run 2026-03-28).
 
 **"I tested a different repo and got 80%."**
 Results vary by repo structure. Flat script collections (e.g., a repository of hundreds

@@ -225,6 +225,8 @@ def test_get_provider_name_none_disables(monkeypatch):
 
 def test_get_provider_name_unknown_falls_back_to_auto(monkeypatch):
     """Unknown explicit values should fall back to auto-detection."""
+    for key in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_BASE", "ZHIPUAI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("JCODEMUNCH_SUMMARIZER_PROVIDER", "unknown-provider")
     monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
     assert get_provider_name() == "minimax"

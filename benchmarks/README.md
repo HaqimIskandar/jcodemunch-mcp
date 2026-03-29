@@ -1,6 +1,6 @@
 # jcodemunch-mcp — Token Efficiency Benchmark
 
-**Result: 95% average token reduction · tiktoken cl100k_base · 15 task-runs · 3 repos**
+**Result: 99.6% average token reduction · tiktoken cl100k_base · 15 task-runs · 3 repos**
 
 ## What this measures
 
@@ -8,7 +8,7 @@ How many tokens a code-retrieval tool consumes versus an agent that reads every 
 
 **Baseline:** concatenate all indexed source files and count tokens. This is the *minimum* cost for a "read everything first" agent — real agents typically read files multiple times, so production savings are higher.
 
-**jcodemunch workflow:** `search_symbols` (top 5 results) + `get_symbol` × 3 hits per query. Total = search response tokens + 3 × symbol source tokens.
+**jcodemunch workflow:** `search_symbols` (top 5 results) + `get_symbol_source` × 3 hits per query. Total = search response tokens + 3 × symbol source tokens.
 
 **Tokenizer:** `tiktoken cl100k_base` — the GPT-4 / Claude family encoding. Consistent across runs regardless of model.
 
@@ -49,12 +49,12 @@ Full per-task tables are in [`results.md`](results.md).
 
 | Repo | Files | Baseline tokens | Avg reduction |
 |------|------:|----------------:|--------------:|
-| expressjs/express | 34 | 73,838 | **98.4%** |
-| fastapi/fastapi | 156 | 214,312 | **92.7%** |
-| gin-gonic/gin | 40 | 84,892 | **98.0%** |
-| **Grand total** | — | 1,865,210 | **95.0%** |
+| expressjs/express | 165 | 137,978 | **99.4%** |
+| fastapi/fastapi | 951 | 699,425 | **99.8%** |
+| gin-gonic/gin | 98 | 187,018 | **99.4%** |
+| **Grand total** | — | 5,122,105 | **99.6%** |
 
-**95.0% average token reduction** across 15 task-runs · 20.2x ratio · tiktoken cl100k_base.
+**99.6% average token reduction** across 15 task-runs · 263.9x ratio · tiktoken cl100k_base.
 
 To regenerate:
 
@@ -76,5 +76,5 @@ If you publish results against this corpus, open an issue or PR and we'll link t
 ## Methodology notes
 
 - The baseline is a lower bound. Agents that re-read files mid-task spend more.
-- The jcodemunch workflow counts `search_symbols` + `get_symbol` responses only — it does not count system prompt or tool description tokens, which are identical for both approaches.
+- The jcodemunch workflow counts `search_symbols` + `get_symbol_source` responses only — it does not count system prompt or tool description tokens, which are identical for both approaches.
 - Token counts are from serialized JSON responses, not raw source, so they include field names and structure overhead. This slightly understates the reduction.

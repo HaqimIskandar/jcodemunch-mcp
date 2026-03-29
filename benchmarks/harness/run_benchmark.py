@@ -49,7 +49,7 @@ except ImportError:
 
 from jcodemunch_mcp.storage import IndexStore
 from jcodemunch_mcp.tools.search_symbols import search_symbols
-from jcodemunch_mcp.tools.get_symbol import get_symbol
+from jcodemunch_mcp.tools.get_symbol import get_symbol_source as get_symbol
 
 # ---------------------------------------------------------------------------
 # Config
