@@ -563,6 +563,10 @@ def test_openai_summarizer_responses_partial_parse_falls_back_per_symbol():
 
 def test_openai_summarizer_explicit_openai_provider_uses_default_api_base():
     """Explicit openai provider should default to the hosted OpenAI base URL."""
+    from jcodemunch_mcp import config as _cfg_module
+
+    _sentinel = object()
+    _orig = _cfg_module._GLOBAL_CONFIG.get("allow_remote_summarizer", _sentinel)
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "choices": [{"message": {"content": "1. Handles hosted OpenAI requests."}}]
@@ -581,12 +585,19 @@ def test_openai_summarizer_explicit_openai_provider_uses_default_api_base():
         },
         clear=True,
     ):
-        summarizer = OpenAIBatchSummarizer(
-            model="gpt-4o-mini",
-            api_base="https://api.openai.com/v1",
-            api_key="sk-test",
-        )
-        summarizer.client = mock_client
+        try:
+            _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = True
+            summarizer = OpenAIBatchSummarizer(
+                model="gpt-4o-mini",
+                api_base="https://api.openai.com/v1",
+                api_key="sk-test",
+            )
+            summarizer.client = mock_client
+        finally:
+            if _orig is _sentinel:
+                _cfg_module._GLOBAL_CONFIG.pop("allow_remote_summarizer", None)
+            else:
+                _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = _orig
 
     symbols = [
         Symbol(
@@ -608,6 +619,10 @@ def test_openai_summarizer_explicit_openai_provider_uses_default_api_base():
 
 def test_openai_summarizer_minimax_provider_defaults():
     """MiniMax should use its fixed API base and model."""
+    from jcodemunch_mcp import config as _cfg_module
+
+    _sentinel = object()
+    _orig = _cfg_module._GLOBAL_CONFIG.get("allow_remote_summarizer", _sentinel)
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "choices": [{"message": {"content": "1. Uses the MiniMax endpoint."}}]
@@ -624,12 +639,19 @@ def test_openai_summarizer_minimax_provider_defaults():
         },
         clear=True,
     ):
-        summarizer = OpenAIBatchSummarizer(
-            model="minimax-m2.7",
-            api_base="https://api.minimax.io/v1",
-            api_key="test-key",
-        )
-        summarizer.client = mock_client
+        try:
+            _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = True
+            summarizer = OpenAIBatchSummarizer(
+                model="minimax-m2.7",
+                api_base="https://api.minimax.io/v1",
+                api_key="test-key",
+            )
+            summarizer.client = mock_client
+        finally:
+            if _orig is _sentinel:
+                _cfg_module._GLOBAL_CONFIG.pop("allow_remote_summarizer", None)
+            else:
+                _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = _orig
 
     symbols = [
         Symbol(
@@ -652,6 +674,10 @@ def test_openai_summarizer_minimax_provider_defaults():
 
 def test_openai_summarizer_glm_provider_defaults():
     """GLM should use its fixed API base and model."""
+    from jcodemunch_mcp import config as _cfg_module
+
+    _sentinel = object()
+    _orig = _cfg_module._GLOBAL_CONFIG.get("allow_remote_summarizer", _sentinel)
     mock_response = MagicMock()
     mock_response.json.return_value = {
         "choices": [{"message": {"content": "1. Uses the GLM endpoint."}}]
@@ -668,12 +694,19 @@ def test_openai_summarizer_glm_provider_defaults():
         },
         clear=True,
     ):
-        summarizer = OpenAIBatchSummarizer(
-            model="glm-5",
-            api_base="https://api.z.ai/api/paas/v4/",
-            api_key="test-key",
-        )
-        summarizer.client = mock_client
+        try:
+            _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = True
+            summarizer = OpenAIBatchSummarizer(
+                model="glm-5",
+                api_base="https://api.z.ai/api/paas/v4/",
+                api_key="test-key",
+            )
+            summarizer.client = mock_client
+        finally:
+            if _orig is _sentinel:
+                _cfg_module._GLOBAL_CONFIG.pop("allow_remote_summarizer", None)
+            else:
+                _cfg_module._GLOBAL_CONFIG["allow_remote_summarizer"] = _orig
 
     symbols = [
         Symbol(
