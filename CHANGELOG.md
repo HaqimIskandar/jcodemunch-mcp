@@ -84,6 +84,47 @@ Two existing tests turned red and neither was fixed back.
 weak-match verdict to be published as a dead end. Both stated the mechanism
 that was the defect; both keep the outcome that is the feature.
 
+### Fixed - Java records and annotation types were never indexed (#713)
+
+A `record`, its compact constructor, an `@interface` and its elements produced
+no symbols at all, and the methods written inside a record extracted with **no
+owner** -- an index holding a method that belongs to nothing.
+
+The grammar spells `record_declaration`, `compact_constructor_declaration`,
+`annotation_type_declaration` and `annotation_type_element_declaration`, each
+with a `name` field. `JAVA_SPEC` named none of them, so the declarations were
+never matched. Records have been in Java since 16.
+
+⚠⚠ **This is #698 in a third language, and the ownership half already had a
+guard.** #698 added `abstract_class_declaration` to the TypeScript specs, and
+its lesson was recorded as that fix plus the Rust `qual_mismatch` bucket, which
+gates at 0 on the rule "the owner is `self_ty`, never the trait". Neither
+reached Java. The suite stayed green because `test_languages.py`'s Java fixture
+holds a class, an interface and an enum -- the three forms the spec already
+named. A fixture written from the spec can only confirm the spec (#699).
+
+**The two halves are separate and both are asserted.** Names come from
+`symbol_node_types`/`name_fields`; ownership comes from `container_node_types`,
+which is why a method inside a record extracted before this change and reported
+`parent=None`. A fix that added the names alone would have looked complete and
+left every record member ownerless.
+
+⚠ **A record COMPONENT is deliberately not a symbol**, with a test that says so.
+A component is closer to a PARAMETER of the header than to a member: it is
+declared in the signature, and what the class exposes because of it -- the
+backing field, the accessor -- is generated, so indexing those would report
+members nobody wrote. #713's own Test section asks for `Point.value` with an
+owner, so this declines one item the issue names; it declines it in the open,
+with a flip path in the test. If that boundary should move it moves
+deliberately, with its own evidence.
+
+⚠ Two entries were added to `return_type_fields` and `type_patterns` in the
+first draft and removed: **nothing in the tree reads either field**, across all
+79 specs, so the entries would have changed no behaviour while implying they
+did. Filed as #725. The omission half of this defect class -- a form the grammar
+spells that no spec names, which is #698, #713 and half of #712 -- still has no
+guard; #723's ratchet reads only what a spec already declares. Filed as #724.
+
 Found by an external critique of 1.108.319.
 
 ### Fixed - the release's post-publish check asked PyPI a different question than the one it needed (#709)
