@@ -125,6 +125,57 @@ did. Filed as #725. The omission half of this defect class -- a form the grammar
 spells that no spec names, which is #698, #713 and half of #712 -- still has no
 guard; #723's ratchet reads only what a spec already declares. Filed as #724.
 
+### Fixed - C# operators, conversion operators and indexers were not indexed (#714)
+
+A C# type resolved while three kinds of callable member inside it did not exist
+as symbols: `Vec + Vec` had no definition to jump to, and a cast operator could
+not be found at all.
+
+⚠⚠ **Declaring the node types is only half, and the other half is why this is
+not a one-line spec edit.** None of the three has an identifier to borrow. The
+grammar gives an operator's name as the bare token `+`; a conversion operator
+has no name field whatsoever, only a direction and a target type; an indexer is
+spelled `this[...]`. A `name_fields` entry would have produced a symbol called
+`+`, which matches nothing a reader types and collides with punctuation in a
+lexical index. The names are built in `_extract_name`'s csharp branch:
+`operator +`, `explicit operator string`, `implicit operator int`, `this[]` --
+each the text a developer writes at the declaration, so searching the
+declaration's own spelling finds it.
+
+⚠ **The guard for this was already in the function that needed changing.** That
+branch exists because `field_declaration` and `event_field_declaration` have the
+same shape -- a node type whose name is not at `child_by_field_name("name")`. It
+was solved for those two and never stated as a rule, so three more forms with
+the identical shape went unasked about. "A guard written against a spelling is
+fixed for that spelling only" (#566).
+
+Overload identity needed nothing: two `operator +` on one type already get
+`~1`/`~2` ids from the existing machinery, exactly as ordinary method overloads
+do, and the new forms inherit it. C# 11's `operator checked +` is a different
+member from `operator +` and carries the keyword in its name, so two members
+never publish one name. An indexer's `get` accessor is deliberately not
+promoted to a symbol -- a test says so, because indexing accessors would put a
+`get` on every type with a property.
+
+⚠⚠ **These are the first members here that no name-based reference search can
+see, and that made `check_delete_safe` dangerous on them.** An operator is
+invoked as `a + b`, an indexer as `a[0]` -- the declaration's name appears at no
+call site, so "no references found" is not evidence about it. Measured on a
+corpus using every one of them: the ordinary method in the same file returned
+`internal_uses_blocking`, and `operator +` returned **`safe_to_delete` at
+confidence 1.0**, "No callers or refs found." The new `name_not_searchable`
+verdict replaces the absence verdicts for any symbol whose name is not something
+a call site could write, capped at the same `UNPROVEN_CEILING` an unprovable
+absence already uses, and it is BOUNDED rather than terminal -- reading the call
+sites or ingesting runtime evidence still settles it. `tools/_name_reachability.py`
+is the one answer to "can a name-based search see this symbol", so the next
+consumer asks instead of re-deriving. This is #566's lesson -- capping a report
+does not cap the tool that ACTS on it -- on surface this change created.
+
+Fourth language in the #698 family (#698 TypeScript, #712 JavaScript/TS/TSX,
+#713 Java). The scan that would have caught all four -- a declaration form the
+grammar spells and no spec names -- is #724 and still does not exist.
+
 Found by an external critique of 1.108.319.
 
 ### Fixed - the release's post-publish check asked PyPI a different question than the one it needed (#709)
