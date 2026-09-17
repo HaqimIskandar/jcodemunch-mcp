@@ -2,6 +2,134 @@
 
 ## [Unreleased]
 
+### Fixed - every Kotlin property is a symbol, and the constant channel keeps its own (#732)
+
+A Kotlin class indexed with its methods and none of its state. `val owner`,
+`var balance`, a `private val`, and a top-level `val` or `var` all yielded no
+symbol at all, so a data class -- whose entire surface is properties -- was an
+empty name in the index.
+
+⚠⚠ **Reading the extractor said this was covered.** There is a
+`property_declaration` branch keyed on kotlin, added by #428, and it is a
+CONSTANT extractor: it declines anything that is not a `val`, and any `val`
+whose name does not read as SCREAMING_CASE. It does exactly what it was written
+to do and nothing was wrong with it. Ordinary properties had no channel, and the
+branch's existence is what kept that invisible to a reader -- it took running
+the product to see it.
+
+⚠⚠ **`property_declaration` is now in `symbol_node_types` AND
+`constant_patterns`, which is a trap unless one rule owns the split.**
+`_walk_tree` runs the constant check independently of symbol extraction on the
+same node rather than as an `elif`, so two channels deciding separately emit
+`const val MAX_RETRIES` twice. `kotlin_property_is_constant` is the single
+predicate both sides ask about constant-ness: the constant branch extracts when
+it answers True and `_extract_name` declines when it does. Locality is the
+second shared predicate and had to become one the same way -- see below, where
+leaving it to the constant channel's scope gate alone published `init`-block
+locals as class constants. A second copy of #428's rule inside
+`_extract_name` would have worked on the day it was written and drifted into a
+gap or a double-emit later, which is the second-derivation shape this project
+keeps paying for.
+
+⚠ The kind is `property`, not `constant`. A `var` is mutable, and every
+constant-oriented consumer would otherwise be told it never changes.
+
+⚠⚠ **#571 was one entry from repeating, and the whole suite stayed green over
+it.**
+`property` was not in `KIND_ORDER`, so `search_symbols(kind="property")` is
+refused by the `kind_filter not in VALID_KINDS` check and the published schema
+enum omits the value -- a symbol indexed, and unreachable through the one filter
+meant to find it. `PHP_SPEC` had mapped the kind for years while nothing emitted
+one, so it sat declared-and-dead and no test could see it; Kotlin is the first
+live emitter. #571's fix DERIVED the enum from `KIND_ORDER` so the two copies
+could not drift, and that was not enough, because nothing checked that a kind a
+SPEC can emit is a kind the tuple contains.
+`test_every_spec_kind_is_a_valid_kind` is that check, over every spec; run
+against the pre-fix tuple it names both kotlin and php.
+
+⚠⚠ **Kotlin also joined `_CLASS_SCOPED_CONSTANT_LANGUAGES`, and that is not part
+of the property fix -- it closes a hole the property fix would otherwise have
+made structural.** The constant channel is gated on `parent_symbol is None`
+unless the language is in that set, so at class or object scope it never ran for
+Kotlin. Once `property_declaration` was declared, `_extract_name` began
+declining constant-shaped properties to a channel that could not accept them, so
+`val MAX_SIZE` in a class body, and `const val` in a `companion object` or an
+`object`, were emitted by NEITHER: the split was disjoint but not exhaustive. A
+`const val` in a companion object is the idiomatic Kotlin constant, so the hole
+sat over the most common shape. Found in review, against a first fixture that
+had no companion object in it and therefore could not fail on it.
+
+⚠ Appending to `KIND_ORDER` is safe for the cached prefix -- positions 0-7 are
+byte-identical and only the insertion point onward moves -- but it is not free:
+the `search_symbols` schema grows 2 tokens (`core_compact` 3967 to 3969), one
+full-rate prefix rewrite per user, inside `schema.drift_tolerance` and well
+under the 4,000 ceiling. The Counter surface is untouched -- `counter_compact`
+stays at 945 tokens and the byte pin in
+`tests/test_counter_surface_stability.py` at 4,184 B over six tools, neither
+of which this change reaches.
+
+⚠⚠ **The first fix indexed every Kotlin local variable, and the gate that
+closed it was wrong for three more scopes.** Kotlin spells a local `val x = 1`
+inside a function with the same node type as a class member, so declaring
+`property_declaration` made `Foo.m.localOrdinary`, `Foo.m.inner` and
+`topFn.topLocal` symbols -- one of them declared in a `for` body. The first
+gate was a DENYLIST of local scope spellings
+(`{function_body, lambda_literal, anonymous_initializer}`, walked up the
+ancestors), and it missed a secondary constructor's body, an `if` body and a
+`when` body: `class C { constructor() { val inCtor = 2 } }` published `inCtor`
+as a property of `C`. A guard written against a spelling, recurring through its
+own fix. The rule is an ALLOWLIST of member parents now -- `class_body`,
+`enum_class_body`, `source_file` -- derived by asking the grammar over 25
+shapes rather than by listing what came to mind: every local's direct parent is
+`statements` and every member's is one of those three, with no exceptions and
+no walk. ⚠ The DIRECTION is the rule: an allowlist fails closed to the pre-fix
+status quo, where a denylist fails open and publishes a local as class state.
+It also fixes the other direction -- a property of a class declared inside a
+function is a declared member of an indexed type, and an ancestor walk called
+it a local.
+
+⚠⚠ **The constant channel has to ask the locality predicate too.** An `init`
+block and a secondary constructor are not symbols, so `parent_symbol` is still
+the class and `parent_is_container` is still True inside them: once kotlin
+joined `_CLASS_SCOPED_CONSTANT_LANGUAGES`, `class A { init { val MAX_I = 1 } }`
+emitted `MAX_I` as a constant belonging to `A`. The two channels were
+disagreeing about the same node while a docstring claimed one predicate decided
+for both. Both ask both predicates now. This also closes the last of the
+capitalisation incoherence: outside a function body, a local `val MAX_W` was
+dropped while the `val inWhen` beside it was indexed, so which declarations
+became symbols depended on how they were spelled.
+
+⚠⚠ **`PARSER_GENERATION` 7 to 8, and this one repairs a released fix as well.**
+Symbols on unchanged content is the clearest case the counter has: every `.kt`
+file in an existing index was parsed at gen 7 with no properties, and
+incremental never re-reads unchanged content, so without a bump Kotlin
+properties stay missing forever for anyone who already has an index. #698 --
+TypeScript abstract classes, shipped in 1.108.319 -- is the identical case and
+shipped WITHOUT a bump, so it currently reaches only files that have changed
+since. The counter is one integer for the whole tree, so this re-parse carries
+that fix to existing indexes too. Named rather than left as a silent side
+effect.
+
+⚠ Blast radius, stated rather than left to be discovered: a new symbol class
+for every Kotlin file changes symbol counts, and `find_dead_code` applies no
+`kind` filter, so every private Kotlin `val`/`var` with no importer now enters
+the dead-code corpus and moves `dead_code_pct` and the health-radar grade for
+every Kotlin repo. That is the correct behaviour -- an unreferenced private
+property is exactly what that tool is for -- and it is a grade movement users
+will see on their next re-index. `find_similar_symbols` and `get_parity_map`
+default to callable kinds and are unaffected.
+
+⚠ Out of scope and stated as tests rather than left silent: a constructor
+`val` parses as `class_parameter`, not `property_declaration`; and
+`val (a, b) = pair` is `multi_variable_declaration`, which binds more than one
+name, so naming it would have to pick one. Both remain in #724's inventory.
+
+Found by #724's grammar inventory on its first review, and confirmed by running
+`parse_file` rather than by reading the scan. Both ratchets from the two
+preceding PRs fired on this fix -- #712's pairing check when the node type
+became declared, and #724's `_CONFIRMED_GAPS` assertion the moment the gap
+closed, naming the record to delete. The inventory went 273 to 272 forms.
+
 ### Added - the grammar is asked what it spells, instead of trusted to match what we wrote (#724)
 
 Four issues were one property wearing four costumes. TypeScript spelled
