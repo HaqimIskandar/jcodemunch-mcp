@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Security - anyio 4.12.1 carries a critical TLS advisory, and the gate found it before a release did
+
+`deps.vuln_max` went red on every open branch at once, which is what a
+dependency floor looks like when the advisory is published rather than the tree
+changed. Two advisories against the locked `anyio==4.12.1`:
+GHSA-82r6-8w77-94w6 (critical -- `TLSStream` encodes host names with IDNA 2003,
+so a certificate can be spoofed for a name that normalises differently under
+IDNA 2008) and GHSA-5p39-cfhj-2xmp (medium -- a process-pool worker blocks
+indefinitely on undrained stderr).
+
+The TLS one reaches us through the HTTP transport, which is the surface that
+terminates TLS. Locked at 4.15.1, and the `http` and `all` extras declare
+`anyio>=4.14.2` rather than `>=4.0.0` -- a floor that admits the vulnerable
+version keeps admitting it after the lock moves, and the lock governs CI, not
+what a user resolves.
+
 ### Fixed - three dead literals in two inline extractors, two of which hid a form (#736, #737, #738)
 
 A Solidity `constructor`, a Solidity custom `error` and a Julia short-form
@@ -395,6 +411,96 @@ only loses its gap entry -- the fix declares `var_declaration`, the node a reade
 opens and the one that wraps every spec of a grouped block, so the row's claim
 that no channel names `var_spec` is still true. What stopped being true is the
 gap entry's claim that the form yields nothing.
+### Fixed - the grammar inventory's recognised set reads all four extraction channels (#757)
+
+`tests/test_grammar_spelled_forms.py` freezes, per language, the
+declaration-shaped node types a grammar emits that the language's spec does not
+recognise. `_checkable_languages` derived that recognised set from
+`symbol_node_types` alone, and a spec has four extraction channels --
+`symbol_node_types`, `constant_patterns`, `field_patterns` (#735) and
+`variable_patterns` (#741). Three of them were invisible to the file whose job
+is naming what is unindexed.
+
+⚠⚠ **The tell is the DIRECTION: closing a gap could make the count go UP.**
+#735 indexed every Java field through `field_patterns`, and
+`java.field_declaration` stayed listed as unrecognised -- that one is on `main`.
+The second was measured on #743/#744's branch (PR #761, merged since), which
+moves `php.property_declaration` out of `symbol_node_types` into the same
+channel: the inventory GREW there **in the change that fixes it**. The two
+figures that measurement carried are not restated, because the base moves with
+every parallel fix. So the artifact a reader consults to pick
+the next gap was reporting indexed forms as gaps, and a fix could make its own
+evidence worse.
+
+⚠⚠ **"Declared in a channel" is not "extracted by it", which is why this was
+correctly left alone twice and why the union ships with a second half.**
+`java.field_declaration` sat in `constant_patterns` for years while every
+ordinary field was dropped, because that channel required `static final`. A set
+unioned by DECLARATION alone would have called the form recognised and hidden
+the widest gap #724 found -- re-installing the defect #735 exists to fix,
+silently, in the instrument that measures it.
+
+So every form the widening suppresses a row for owes a sample in
+`tests/test_inventory_reads_every_channel.py`, and each sample proves the
+channel extracts that form **by deletion**: the node type is removed from every
+channel, the file is re-parsed, and the symbol must stop coming out. Appearance
+alone cannot carry the claim -- a sample has to be legal source, so it carries a
+container the spec also declares, and a container can answer "the kind appears"
+by itself. That was the hollow row review found in #745's guard, one channel
+over. A form that stops extracting now returns to the inventory instead of
+hiding in it.
+
+⚠⚠ **The classification is keyed to the SHAPE, and the rule is INVERTED so an
+unrecognised shape fails closed.** Keying it to a spelling was wrong twice --
+first no rule at all, then a rule over `list[str]` while the canonical channel
+`symbol_node_types` is a `dict[str, str]`, which is the natural spelling for any
+channel carrying a kind. Both versions were the same fail-open shape, narrower
+each time, which is #709's history exactly: re-keyed four times in six rounds,
+and what held was one shared predicate plus pinned cases. So the SCALAR
+spellings are pinned and every other annotation is treated as a collection of
+node types owing one of four classifications. `tuple[str, ...]`, `frozenset[str]`
+and a nested dict now land in the rule by default rather than escaping it, and a
+new scalar KIND fails loudly instead of being waved through. A rule over `list[str]` alone misses the shape the canonical
+channel has -- `symbol_node_types` is a `dict[str, str]`, node type to kind,
+which is the natural spelling for any channel carrying a kind -- so a
+dict-shaped fifth channel walked through the rule written to stop exactly that.
+One predicate over node-type collections now covers both, and #709 is the
+precedent: re-keyed four times in six rounds, and what held was one shared
+predicate plus pinned cases.
+
+⚠ **The scan found a third write-only spec field on its first run.** #725 named
+`type_patterns` and `return_type_fields`; `param_fields` is required
+positionally, so every spec fills it in, and nothing in `src/` reads it. It was
+classified "signature detail" here on the strength of its name until the scan
+disagreed, which is the argument for scanning a classification rather than
+stating one.
+
+⚠⚠ **An UNKNOWN read is not an absence, and the irony is load-bearing.** The
+scan matches a literal attribute, a constant `getattr` and a constant subscript;
+it cannot see `getattr(spec, name)` with a variable -- which is precisely how
+the channels themselves are read here. If the parser adopted that style over a
+spec field, the scan would report a field read on every call as unread and the
+unread test would CERTIFY the classification it exists to refuse. A dynamic read
+in the package that consumes specs now fails loudly instead, the same tri-state
+rule the product applies to `has_any()`.
+
+⚠⚠ **The channel list is one gated roster, not a list two files transcribe.**
+Both readers import one tuple, and `LanguageSpec`'s field roster is pinned: a
+fifth field fails by name and forces one decision, channel or not-a-channel with
+the reason. The classification cannot be the lazy answer either -- a node-type
+LIST classified as a non-channel owes either "nothing reads it", which is
+SCANNED across `src/`, or a named non-extraction read, which is
+`container_node_types` alone and pinned to the file that reads it. That closes
+the recurrence one field over: `type_patterns` is declared by 19 specs and read
+by nothing (#725), so the day something wires it in it becomes a channel the
+recognised set has never heard of, and the only symptom would be this inventory
+quietly listing forms the product extracts. Ten planted defects, ten named
+guards red, each one PREDICTED before it was run.
+
+⚠ Inventory **272 -> 264**: eight rows leave, across go, java, javascript, php,
+rust, tsx and typescript. `docs/harness/ARCHAEOLOGY.md` carries the new count.
+`variable_patterns` is read through `getattr`, so this does not depend on the
+order #741's branch and this one merge in.
 
 ### Fixed - every Java field is a symbol, not only the `static final` ones (#735)
 
