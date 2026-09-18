@@ -18,8 +18,10 @@ item numbers are the only thing this file knows.
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -194,6 +196,189 @@ def harness_pass(summary: str | None) -> bool | None:
     return "**FAIL**" not in summary and "HARNESS FAIL" not in summary
 
 
+#: How similar two bodies must be for a removal + addition to read as a RENAME.
+#:
+#: ⚠⚠ **A DELIBERATE BIAS TOWARD REPORTING, not a margin.** The first version
+#: of this comment claimed 0.75 "sits between them with margin on both sides" on
+#: the strength of two samples -- `b9dfcb19`, the one retirement in
+#: `harness/retired.json`, at **0.571**, and #753's rename (`880a9061`) at
+#: **0.851**. A sweep of the last 800 commits touching `tests/` falsifies that:
+#: **499 removal/addition pairs reach this rule, only 6 clear 0.75, and 58 sit
+#: inside the 0.571-0.851 band.** The rename class straddles the line -- genuine
+#: renames measured at 0.735, 0.696 and 0.689 -- so there is margin against the
+#: two samples and NONE against the class.
+#:
+#: ⚠⚠ **Those are PRODUCTION-PATH figures and the first version's were not.**
+#: `name not in moved` runs BEFORE `_is_a_rename`, so a name re-added anywhere in
+#: the diff never reaches the body comparison. Scoring those 16 pairs too gave
+#: 517 / 15 / 64 and told a reader the constant excludes 15 of 517 when on the
+#: path it governs it excludes 6 of 499 -- the near-identical bodies of re-added
+#: names are what doubled the count. Found in review. **A measurement quoted to
+#: justify a rule has to be taken on the path that rule runs on.**
+#:
+#: ⚠⚠ It stays at 0.75 anyway, and the reason is the direction of the error.
+#: A missed retirement loses the lesson permanently and silently; a reported
+#: rename costs a human one look. **The cost is ledger NOISE, not blocked work**:
+#: an `unmet` row has `pre_pr.py` refuse the PR, and the cheapest escape is a
+#: ledger entry for a rename, which `tests/test_retirement_ledger.py` accepts
+#: because the old name is genuinely gone. So the bias dilutes the ledger rather
+#: than stopping anyone.
+#:
+#: ⚠ `test_a_rename_below_the_threshold_is_an_accepted_false_positive` pins one
+#: of the measured sub-0.75 renames, so **lowering this constant to "fix" a
+#: false positive fails a test that explains why it is accepted.** Raising or
+#: lowering it needs a re-run of the sweep, not a nudge against one case.
+_RENAME_BODY_SIMILARITY = 0.75
+
+
+def retired_test_functions(diff: str, repo: pathlib.Path) -> list[str]:
+    r"""Test FUNCTIONS removed and not redefined, keyed `file::name`.
+
+    ⚠⚠ **A file-granular check could not see a retirement.** DoD 11 and
+    `harness/retired.json`'s own note are explicit that the unit is
+    `file::test_name`, and this item read `--diff-filter=D`, which lists
+    deleted FILES only -- so a PR deleting two test functions from a file
+    that survives was graded `n.a.`, and the item was never evaluated by the
+    machine at all. Found in review of #748/#749, which deleted exactly two.
+
+    ⚠⚠ **A NAME IS NOT AN IDENTITY, and the first version of this keyed on
+    one.** It concatenated every file under `tests/` and asked whether
+    `def <name>(` appeared anywhere, so retiring one of the **128 test names
+    that are defined in more than one file** (`test_empty` in 8,
+    `test_idempotent` in 6) was excluded as a rename and the ledger was
+    never demanded -- the exact grade this detector exists to stop. That is
+    `tests/test_key_files_split.py`'s own recorded bug, which collapsed
+    `runtime/redact.py` with `redact.py` by basename, reproduced inside a
+    guard written against a neighbouring miss. Keyed `file::name` now.
+
+    ⚠⚠ **A rename is told from a retirement by the BODY, and a file-level
+    rule was measured wrong.** The first version excluded every removal in a
+    file that gained any test function, which silenced `b9dfcb19` -- the ONLY
+    prior retirement in `harness/retired.json` -- because its replacement was
+    added to the same file beside eleven other new tests. The ledger's schema
+    makes that the normal shape, not an edge case: entry 0's `path` and
+    `replacement` name one file. A rename keeps the body; a replacement
+    rewrites it, so the bodies are compared against
+    `_RENAME_BODY_SIMILARITY`, which is measured on both real cases in this
+    repo's history rather than chosen.
+
+    ⚠ A name added to ANOTHER file in the same diff is a move, not a
+    retirement, and is excluded by name.
+
+    ⚠ `REPO / "tests"`, never `Path("tests")`: every other filesystem and
+    git read here is anchored because a hook's CWD is not the repo root.
+    Unanchored, `rglob` yields nothing, every removed name reads as retired,
+    and `pre_pr.py` refuses the PR on an ordinary rename.
+
+    ⚠ A DEFINITION, not a mention. The survival scan matches
+    `^\s*(async\s+)?def <name>\b` per file, the pattern
+    `tests/test_retirement_ledger.py` already uses. A raw substring scan is
+    answered by a test that merely NAMES the retired function -- and this
+    very PR ships one, `test_the_retired_gap_tests_are_gone_from_the_short_function_file`,
+    which asserts on the literal `"def test_a_macro_is_a_known_separate_gap"`.
+    It was saved only by the absent `(`.
+    """
+    removed: dict[tuple[str, str], tuple[str, ...]] = {}
+    added: dict[tuple[str, str], tuple[str, ...]] = {}
+    current = ""
+    side = ""
+    block_name = ""
+    block: list[str] = []
+
+    def _flush() -> None:
+        if block_name:
+            target = removed if side == "-" else added
+            target[(current, block_name)] = tuple(block)
+
+    for line in diff.splitlines():
+        # ⚠ A file header is recognised by its FULL prefix, never by a leading
+        # `-`: a removed body line reading `--- separator ---` at column 0 would
+        # otherwise flush the block early and lower that body's similarity
+        # score, which biases a real rename toward reading as a retirement.
+        # Latent (no test file here has such a line) and cheap to close.
+        if line.startswith("+++ b/") or line.startswith("--- a/"):
+            _flush()
+            side, block_name, block = "", "", []
+            # ⚠⚠ BOTH headers set the path, and reading only `+++ b/` misattributed
+            # every test in a DELETED file: git emits `+++ /dev/null` there, so
+            # `current` kept the previous file and the removed tests were keyed to
+            # it -- measured, `tests/test_b.py`'s test reported as
+            # `tests/test_a.py::test_from_the_deleted_file`. That feeds the wrong
+            # file to the survival check AND to the rename comparison. A modified
+            # file and a rename both overwrite this from `+++ b/` on the next line.
+            current = line[len("+++ b/"):].strip()
+            continue
+        if line.startswith("@@"):
+            _flush()
+            side, block_name, block = "", "", []
+            continue
+        if not current or line[:1] not in ("-", "+"):
+            _flush()
+            side, block_name, block = "", "", []
+            continue
+        if line[:1] != side:
+            _flush()
+            side, block_name, block = line[:1], "", []
+        text = line[1:]
+        m = re.match(r"\s*(?:async\s+)?def (test_\w+)", text)
+        if m:
+            _flush()
+            block_name, block = m.group(1), []
+        elif block_name:
+            stripped = text.strip()
+            if stripped:
+                block.append(stripped)
+    _flush()
+
+    if not removed:
+        return []
+
+    def _defined_in(path: str, name: str) -> bool:
+        file_path = repo / path
+        try:
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return bool(
+            re.search(rf"^\s*(?:async\s+)?def {re.escape(name)}\b", text, re.M)
+        )
+
+    def _is_a_rename(path: str, body: tuple[str, ...]) -> bool:
+        """Did some function ADDED to this file keep this one's body?
+
+        ⚠⚠ **The body is the discriminator, and a file-level one was measured
+        WRONG.** Excluding every removal in a file that gained any test silenced
+        `b9dfcb19` -- the only prior retirement in `harness/retired.json` --
+        because its replacement went into the SAME file beside eleven other new
+        tests. The ledger's own schema makes that the normal shape: entry 0's
+        `path` and `replacement` name one file. So the file-level rule missed
+        1 of 1 historical retirements, and this PR was caught only because its
+        replacements happened to go in a new file.
+
+        ⚠ A rename keeps the body; a replacement rewrites it.
+        `_RENAME_BODY_SIMILARITY` carries the calibration and the two
+        measurements behind it.
+        """
+        if not body:
+            return False
+        for (added_path, _name), added_body in added.items():
+            if added_path != path or not added_body:
+                continue
+            if difflib.SequenceMatcher(
+                None, "\n".join(body), "\n".join(added_body)
+            ).ratio() >= _RENAME_BODY_SIMILARITY:
+                return True
+        return False
+
+    moved = {name for _path, name in added}
+    return sorted(
+        f"{path}::{name}"
+        for (path, name), body in removed.items()
+        if not _defined_in(path, name)
+        and name not in moved
+        and not _is_a_rename(path, body)
+    )
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-ref", default="origin/main")
@@ -216,11 +401,18 @@ def main() -> int:
     src_diff = git("diff", f"{base}...HEAD", "--", "src/") + git("diff", "--", "src/")
     touched = lambda *pre: any(c.startswith(pre) for c in changed)  # noqa: E731
     src_changed = touched("src/")
-    tests_deleted = bool(
-        git(
+    deleted_test_files = [
+        f
+        for f in git(
             "diff", "--name-only", "--diff-filter=D", f"{base}...HEAD", "--", "tests/"
-        ).strip()
+        ).splitlines()
+        if f.strip()
+    ]
+
+    retired_functions = retired_test_functions(
+        git("diff", "-U0", f"{base}...HEAD", "--", "tests/"), REPO
     )
+    tests_deleted = bool(deleted_test_files) or bool(retired_functions)
 
     rows: list[tuple[int, str, str]] = []
 
@@ -425,7 +617,7 @@ def main() -> int:
 
     # 11 retired test ledger
     if not tests_deleted:
-        row(11, "n.a.", "no test file deleted")
+        row(11, "n.a.", "no test file deleted and no test function retired")
     else:
         rc, out = sh(
             "uv",
@@ -436,10 +628,12 @@ def main() -> int:
             "-p",
             "no:cacheprovider",
         )
+        subject = ", ".join(deleted_test_files + retired_functions) or "(none)"
         row(
             11,
             "met" if rc == 0 and "harness/retired.json" in changed else "unmet",
-            f"retirement ledger test rc={rc}; harness/retired.json changed={'harness/retired.json' in changed}",
+            f"retired: {subject}; ledger test rc={rc}; harness/retired.json "
+            f"changed={'harness/retired.json' in changed}",
         )
 
     # 12 threshold moved

@@ -156,9 +156,67 @@ def test_opener_regex_needs_a_word_boundary(line, expected):
 
 
 def test_source_carries_no_stray_control_characters():
-    """The guard for the above, over the whole module."""
-    text = (_REPO / "src" / "jcodemunch_mcp" / "parser" / "complexity.py").read_text(
-        encoding="utf-8"
+    """The guard for the above, over every tree that can carry a regex.
+
+    ⚠⚠ **This scanned ONE FILE for its whole life, and the defect recurred
+    outside it.** The lesson was recorded from `complexity.py`'s opener, where a
+    literal BACKSPACE (0x08) had replaced a `\b` and compiled, ran and passed
+    ruff -- so the guard was written against the file where it happened rather
+    than against the property, which is [[a-guard-written-against-a-spelling]]
+    applied to a guard. On 2026-09-18 the same 0x08-for-`\b` substitution landed
+    in `.claude/hooks/dod_checklist.py`'s survival regex, in a PR that cites this
+    lesson; every behavioural row there passed with the corrupt pattern, because
+    a regex that matches nothing looks exactly like a strict one.
+
+    ⚠ Second instance is this project's threshold for fixing the mechanism, so
+    the scan walks `src/`, `tests/` and `.claude/hooks/` -- one `rglob`, cheaper
+    than a per-case row in each consumer, and it covers the files written next.
+    """
+    roots = {
+        "src": _REPO / "src",
+        "tests": _REPO / "tests",
+        ".claude/hooks": _REPO / ".claude" / "hooks",
+    }
+    offenders: dict[str, list[str]] = {}
+    scanned: dict[str, int] = {}
+    for label, root in roots.items():
+        count = 0
+        for path in sorted(root.rglob("*.py")):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            count += 1
+            bad = sorted(
+                {hex(ord(c)) for c in text if ord(c) < 32 and c not in "\n\t"}
+            )
+            if bad:
+                offenders[str(path.relative_to(_REPO))] = bad
+        scanned[label] = count
+
+    assert not offenders, f"control characters in source: {offenders}"
+
+    # ⚠⚠ PER ROOT, because an aggregate floor cannot see a dead root -- which
+    # is the property the widening exists for. `tests/` alone holds ~596 files
+    # and would clear any total worth setting, so a moved or mistyped
+    # `.claude/hooks` path would stop covering the exact tree where the 0x08
+    # recurred while the check stayed green: the single-file blind side this
+    # replaced, re-created one level up. Found in review.
+    #
+    # ⚠⚠ The floor is ONE FILE, and the first version said five. The property is
+    # "the walk reaches this tree", and the failure it catches -- a moved,
+    # renamed or mistyped root -- yields ZERO; the measured non-vacuity run gave
+    # `.claude/hooks: 0`. A margin of three bought nothing and cost a wrong
+    # diagnosis: deleting four hooks legitimately would fail this test saying the
+    # walk is not reaching the root, which is false, and the cheapest escape
+    # would be lowering the constant -- the nudge this PR added a pinned test
+    # elsewhere to prevent. **1 is the property, not a calibration, so there is
+    # nothing to nudge.**
+    missing = sorted(label for label, root in roots.items() if not root.is_dir())
+    assert not missing, f"{missing} are not directories; the roots have moved"
+
+    empty = sorted(label for label, count in scanned.items() if count < 1)
+    assert not empty, (
+        f"{empty} yielded no .py files ({scanned}); the walk is not reaching "
+        f"those roots, so they are unguarded"
     )
-    bad = sorted({hex(ord(c)) for c in text if ord(c) < 32 and c not in "\n\t"})
-    assert not bad, f"control characters in source: {bad}"
