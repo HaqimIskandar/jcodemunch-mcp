@@ -501,6 +501,104 @@ guards red, each one PREDICTED before it was run.
 rust, tsx and typescript. `docs/harness/ARCHAEOLOGY.md` carries the new count.
 `variable_patterns` is read through `getattr`, so this does not depend on the
 order #741's branch and this one merge in.
+### Fixed - a Swift protocol's requirements and every subscript are symbols (#733)
+
+A protocol indexed as a bare name. `func required()` and `var value: Int { get }`
+inside it yielded nothing, and so did every `subscript`, while an ordinary method
+in a struct beside them extracted. A protocol's requirements ARE the protocol --
+they are the contract a caller reads and the names a caller searches for, since
+the call site writes the requirement's name and never the conforming type's --
+so the one Swift declaration whose members are its whole meaning was the one
+whose members were absent. Found by #724's grammar inventory, which had all three
+node types recorded in `_CONFIRMED_GAPS`, verified by running the product.
+
+The seventh language in the class #698 named: a form the grammar spells that the
+spec never names. ⚠⚠ **And the reflex remedy -- add the node type, add its name
+field -- is right for exactly one of the three, which is why this is not three
+lines in a spec.** Both other forms HAVE a `name` field, and on both it points at
+the wrong thing:
+
+- `protocol_property_declaration`'s `name` field is a `pattern` whose text is
+  **`var value`**, because inside a protocol body the binding keyword sits INSIDE
+  the pattern. The identical field on `property_declaration` in a class body
+  yields the bare name, because there the keyword is a SIBLING. One field name,
+  two nestings, and the entry that works in one place indexes a symbol with a
+  space in its name in the other -- unsearchable, and indistinguishable from a
+  fabricated identity.
+- `subscript_declaration`'s `name` field is a `user_type` holding the RETURN
+  type, so an entry there is not merely useless: every subscript in a corpus
+  would index as `Int`, `String` or `Element`. Its name is BUILT in
+  `_extract_name`, #714's remedy for the three C# forms with no identifier to
+  borrow, and it is spelled **`subscript[]`**, mirroring that fix's `this[]` for
+  the same construct one language over.
+
+⚠⚠ **The brackets are load-bearing and a bare `subscript` would have shipped
+#714's defect past the guard written to prevent it.** `tools/_name_reachability.py`
+is THE ONE ANSWER to whether "no references found" is evidence about a symbol,
+and it asks a property of the STRING: a name that is not a plain identifier
+cannot be a call-site token in any language, so it refuses the absence claim. A
+subscript is invoked as `m[i]` and its declaration's name is never written at a
+call site -- but a bare `subscript` is identifier-shaped, so the predicate would
+have called it searchable and `check_delete_safe` would have returned
+`safe_to_delete` for a member the corpus uses on every line that indexes the
+type. Measured: the mutation that drops the brackets fails thirteen tests,
+`test_a_subscript_in_use_is_not_certified_deletable` among them. The guard would
+not have fired, would not have been touched, and would have been wrong -- a
+guard written against a spelling, where the spelling was one we chose.
+
+That is fixed at the level it belongs to rather than in this one name.
+`test_every_built_name_in_the_extractor_is_unreachable_by_name` classifies every
+`return` in `_extract_name` into three buckets and fails on any built name
+`name_can_appear_at_a_call_site` would accept: returned literals, the literal
+scaffolding of every f-string reachable from a return, and -- the bucket that
+makes the other two mean anything -- a return it cannot show to be a name
+BORROWED from the source, so a built name arriving by a variable or a
+concatenation cannot pass by being unrecognised. The property that whole module
+rests on had never been asserted.
+
+⚠⚠ **Its first version reached one of the three interpolated builders and
+said in three places that it reached all three.** `return f"operator checked
+{token}" if checked else f"operator {token}"` is an `ast.IfExp`, so a test on
+the return's TOP node walks past both C# operator builders while its own
+vacuity floor stays satisfied by the third -- green against an identifier-shaped
+`operator_+`. Found in review by planting exactly that. The scan walks each
+return's whole expression now, the builder count is PINNED so a fourth forces a
+decision, and four planted shapes (a bare literal, an f-string behind a
+conditional, a name behind a variable, a concatenation) are parametrized as the
+non-vacuity pass -- [[a-ratchet-can-pass-against-the-defect-it-names]], in the
+ratchet written to close that very lesson.
+
+⚠ A second round found the same shape one layer in and it is fixed the same
+way: the borrowed-name test was a SUBSTRING scan, so
+`return "get_" + source_bytes[a:b].decode("utf-8")` -- which builds the
+identifier-shaped `get_foo` and carries both substrings -- classified as
+borrowed. It asks the expression's SHAPE now, and that case is the fifth planted
+row.
+
+⚠ **The blanket fix was available and refused.** Descending every Swift pattern
+to its identifier covers the protocol case in one line and silently changes
+`property_declaration`, where `let (a, b) = (1, 2)` binds two names: it would
+publish `a` and drop `b` without a trace. `_swift_bound_identifier` returns None
+for a pattern binding none or several, so that case stays where it belongs --
+a channel, not a name resolver (#731's argument) -- and
+`test_a_tuple_binding_is_a_known_separate_gap` pins today's behaviour in both
+directions so the decision is visible rather than accidental.
+
+⚠ A type may declare several subscripts and they share the built name. That is
+#714's accepted limit, recorded here rather than discovered later: the
+alternative is committing the name to a parameter list that overloads disagree
+about. They stay distinct by id and by line.
+
+Impossible now: a protocol requirement or a subscript that reaches the index
+under its return type, under a name carrying a binding keyword, or not at all.
+The three node types leave the grammar inventory and the `swift`
+`_CONFIRMED_GAPS` entry is deleted, so the record cannot outlive the defect. (A
+before-and-after TOTAL is deliberately not quoted here: the base moves with
+every parallel fix that closes a gap, and a delta pinned to one is stale the
+next time this file is merged. The figure lives in the fixture, which is
+regenerated, and in `docs/harness/ARCHAEOLOGY.md`, which is gated against it.) ⚠ Untouched and still tracked:
+Swift `deinit` (#754, PR #756's gap table) and `associatedtype_declaration`,
+which is in the inventory and has never been confirmed by running the product.
 
 ### Fixed - every Java field is a symbol, not only the `static final` ones (#735)
 

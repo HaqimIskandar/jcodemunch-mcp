@@ -122,13 +122,12 @@ _KNOWN_GHOSTS = {
 # wraps every spec of a grouped block -- while `var_spec` itself is still named
 # by no channel. The row remains true as written ("no channel names this form");
 # what stopped being true is the gap entry's claim that the form yields nothing.
-_CONFIRMED_GAPS = {
-    "swift": [
-        ("protocol_function_declaration", "a protocol's method requirements are absent"),
-        ("protocol_property_declaration", "a protocol's property requirements are absent"),
-        ("subscript_declaration", "a subscript yields no symbol"),
-    ],
-}
+# ⚠ And `swift`'s three requirement forms were the last entries, closed by
+# #733. The dict is EMPTY, which is the intended end state and not a missing
+# import: every gap review confirmed through `parse_file` has been fixed.
+# `test_a_confirmed_gap_is_in_the_inventory` is vacuous while it stays empty,
+# and becomes the lifecycle guard again the moment review records the next one.
+_CONFIRMED_GAPS: dict[str, list[tuple[str, str]]] = {}
 
 # ⚠⚠ Confirmed by the product and NOT expressible in the inventory, so recorded
 # here rather than silently dropped. Julia's extractor matches
@@ -1019,11 +1018,8 @@ def test_the_baseline_covers_every_language_the_scan_can_reach():
         assert len(kinds) >= 10, (language, len(kinds))
 
 
-@pytest.mark.parametrize("language,node_type", sorted(
-    (lang, nt) for lang, entries in _CONFIRMED_GAPS.items() for nt, _why in entries
-))
-def test_a_confirmed_gap_is_in_the_inventory(language, node_type):
-    """The nine gaps this instrument found on review are real.
+def test_a_confirmed_gap_is_in_the_inventory():
+    """Every gap this instrument found on review is real, and none outlives its fix.
 
     ⚠ Each was confirmed by running a snippet through `parse_file` and
     watching the symbol not appear, never by reading the scan -- the
@@ -1031,14 +1027,26 @@ def test_a_confirmed_gap_is_in_the_inventory(language, node_type):
     rule. When one is fixed, the node type leaves the inventory and this test
     names the `_CONFIRMED_GAPS` line to delete, the same way the ghost list
     cannot outlive its defect.
+
+    ⚠⚠ NOT parametrized, deliberately. `_CONFIRMED_GAPS` is empty now that
+    #733 closed the last three entries, and a parametrize over an empty set
+    SKIPS -- a green-looking row that asserts nothing, and one unit of the
+    `ci.skips_windows` ceiling spent on it. Iterating inside the test reports
+    every stale entry in one message instead of one id per entry, which is the
+    better failure anyway: the fix is always "delete these lines".
     """
     inventory = _current_inventory()
 
-    assert node_type in inventory.get(language, []), (
-        f"{language}/{node_type} is recorded as a confirmed gap but is no "
-        f"longer in the inventory -- if it was fixed, remove the "
-        f"_CONFIRMED_GAPS entry; if the scan stopped seeing it, the scan "
-        f"is broken."
+    stale = sorted(
+        f"{language}/{node_type}"
+        for language, entries in _CONFIRMED_GAPS.items()
+        for node_type, _why in entries
+        if node_type not in inventory.get(language, [])
+    )
+    assert not stale, (
+        f"{stale} are recorded as confirmed gaps but are no longer in the "
+        f"inventory -- if they were fixed, remove the _CONFIRMED_GAPS "
+        f"entries; if the scan stopped seeing them, the scan is broken."
     )
 
 
