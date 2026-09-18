@@ -69,17 +69,23 @@ class LanguageSpec:
     field_patterns: list[str] = dc_field(default_factory=list)
 
     # Node types for declarations that bind N names to MUTABLE module-level
-    # state -- a JS/TS `let` or `var` (#741, #742).
+    # state. TWO declarers as of this merge: JS/TS `let` and `var` (#741,
+    # #742) and Go's package-level `var` (#731).
     #
-    # ⚠⚠ **A node type may be in BOTH this and `constant_patterns`, and for
-    # JS/TS it is.** `const` and `let` are one node type (`lexical_declaration`)
-    # and the keyword tells them apart, so the two channels match the same node
-    # and `js_binding_is_constant` is the ONE predicate both ask -- #735's Java
-    # split, where two channels deciding separately emit one declaration twice.
+    # ⚠⚠ **A node type may be in BOTH this and `constant_patterns`, and the
+    # two languages sit on opposite sides of that.** JS/TS spells `const` and
+    # `let` as ONE node type (`lexical_declaration`) with the keyword telling
+    # them apart, so both channels match the same node and
+    # `js_binding_is_constant` is the ONE predicate each asks. Go spells
+    # `const_declaration` and `var_declaration` separately, so its two channels
+    # cannot collide and it needs no predicate. The rule for the next member is
+    # the JS/TS one: `_walk_tree` runs the channels INDEPENDENTLY, so two
+    # channels deciding separately emit one declaration twice -- #735's Java
+    # trap and #732's Kotlin one.
     #
     # ⚠ Also READ, for the reason stated above `field_patterns`; the same
-    # readership test covers it, keyed on the spec so a second member is
-    # checked on arrival. #731 (Go's package-level `var`) is the next one.
+    # readership test covers it, keyed on the spec so a new member is checked
+    # on arrival.
     variable_patterns: list[str] = dc_field(default_factory=list)
 
 
@@ -498,6 +504,11 @@ GO_SPEC = LanguageSpec(
     decorator_node_type=None,
     container_node_types=[],
     constant_patterns=["const_declaration"],
+    # ⚠ The DECLARATION, not `var_spec`: one `var_declaration` wraps every spec
+    # of a grouped `var ( ... )` block, and the channel's job is to be handed
+    # the node a reader would open. `_extract_go_variables` walks down to the
+    # specs, through `var_spec_list` when the block is grouped (#731).
+    variable_patterns=["var_declaration"],
     type_patterns=["type_declaration"],
 )
 
@@ -1463,6 +1474,12 @@ SCALA_SPEC = LanguageSpec(
         "function_declaration": "function",
         "val_definition": "constant",
         "var_definition": "constant",
+        # ⚠ `constant`, the kind the `val` it replaced already takes: a `given`
+        # is a stable value, and a new kind would have to be APPENDED to
+        # `KIND_ORDER` (published in the cached schema prefix) to say that a
+        # `given` is a different sort of thing from a `val`, which it is not
+        # (#734).
+        "given_definition": "constant",
     },
     name_fields={
         "class_definition": "name",
@@ -1474,6 +1491,12 @@ SCALA_SPEC = LanguageSpec(
         "function_declaration": "name",
         "val_definition": "pattern",
         "var_definition": "pattern",
+        # ⚠⚠ The field is absent on an ANONYMOUS given (`given Conv = ???`),
+        # and that is the correct outcome: `_extract_symbol` yields nothing, so
+        # the form stays unindexed rather than being published under its TYPE's
+        # name. A name that appears nowhere in the source cannot be searched for
+        # and cannot be told from a `given` genuinely called `Conv` (#734).
+        "given_definition": "name",
     },
     param_fields={
         "function_definition": "parameters",
@@ -1485,7 +1508,16 @@ SCALA_SPEC = LanguageSpec(
     },
     docstring_strategy="preceding_comment",
     decorator_node_type="annotation",
-    container_node_types=["class_definition", "object_definition", "trait_definition", "enum_definition"],
+    # ⚠⚠ `given_definition` is a CONTAINER as well as a symbol (#734). A
+    # structural given -- `given ordering: Ordering[Int] with { def compare ... }`
+    # -- holds members, and naming the given without naming the container
+    # REGRESSES them: the given becomes their parent symbol, is not a container,
+    # so nothing promotes `compare` to a method or qualifies it, and
+    # `O.compare` (method) became a bare `compare` (function). #698's complaint
+    # -- a member losing its owner because a declaration form is mishandled --
+    # arriving through the FIX for a different form. Measured against `main`,
+    # not reasoned about.
+    container_node_types=["class_definition", "object_definition", "trait_definition", "enum_definition", "given_definition"],
     constant_patterns=["val_definition", "var_definition"],
     type_patterns=["trait_definition", "enum_definition", "type_definition"],
 )
