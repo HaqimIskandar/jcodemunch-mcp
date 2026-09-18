@@ -337,7 +337,18 @@ def test_a_known_gap_is_still_a_gap():
 _EXTRACTION_CHANNELS = {
     "field_patterns": (
         "field",
-        {"java": ("A.java", "class A {\n  private int probe;\n}\n")},
+        {
+            "java": ("A.java", "class A {\n  private int probe;\n}\n"),
+            # ⚠⚠ The KIND is per LANGUAGE, not per channel, and #743 is why.
+            # `field_patterns` answers "this declaration binds N names and is
+            # not a symbol in its own right"; what those names ARE is the
+            # language's own word. Java calls them fields, PHP calls them
+            # properties, and PHP_SPEC has declared the `property` kind since
+            # before #571. A table keyed on the channel ALONE would force one of
+            # the two languages to lie about its own members to satisfy a test,
+            # so a sample may carry its own kind as an optional third element.
+            "php": ("a.php", "<?php\nclass A { public $probe = 1; }\n", "property"),
+        },
     ),
     "variable_patterns": (
         "variable",
@@ -383,12 +394,15 @@ def test_every_declared_extraction_channel_actually_yields_its_kind(channel):
             f"sample here, so nothing proves the channel runs for it. Add three "
             f"lines rather than trusting the declaration."
         )
-        filename, source = sample
+        # ⚠ A sample may carry its own kind as a third element, overriding the
+        # channel's; the table's PHP row says why (#743).
+        filename, source, *override = sample
+        expected = override[0] if override else kind
         kinds = {s.kind for s in parse_file(source, filename, language)}
-        assert kind in kinds, (
+        assert expected in kinds, (
             f"{language} declares {channel}={getattr(spec, channel)} and its "
-            f"sample yields no {kind} -- the list is write-only, which is #725 "
-            f"in another costume. Got kinds: {sorted(kinds)}"
+            f"sample yields no {expected} -- the list is write-only, which is "
+            f"#725 in another costume. Got kinds: {sorted(kinds)}"
         )
 
 

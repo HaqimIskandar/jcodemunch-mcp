@@ -215,6 +215,99 @@ a constant there, and an ordinary `let`, `const` or `var` in a `<script>` block
 yields nothing at all. Filed as #751 and #752;
 `test_a_destructuring_pattern_is_a_known_separate_gap` FAILS when #751 closes,
 so the pin cannot outlive it.
+### Fixed - a PHP class is indexed with its state, not only its methods (#743, #744)
+
+Two reports, one language, two different causes. `public $prop = 1` yielded no
+symbol in any visibility, and `const K = 3` inside a class yielded none either
+while the same `const` at file scope worked. A PHP class indexed with its
+methods and none of its state — #735's symptom in a second language.
+
+⚠⚠ **#743 is #712's shape one indirection down.** `PHP_SPEC` named
+`property_declaration` in `symbol_node_types`, mapped it to `property`, and
+gave it `name_fields["property_declaration"] = "name"` — and the grammar sets
+no `name` field on that node. Its named children are the modifiers and one
+`property_element` per bound name, each of which carries the name two levels
+down at `property_element > variable_name > name`. A `name_fields` entry
+pointing at a field the grammar does not produce resolves to nothing, so the
+symbol was dropped in silence while every map looked complete. **That is also
+why `property` sat in `KIND_ORDER` as a declared-and-dead kind until Kotlin
+became its first live emitter (#732): that entry named the symptom, this is the
+cause.**
+
+⚠ The `$` is not part of the name. `variable_name` spells `$prop` and its
+`name` child spells `prop`, which is what `$this->prop` writes and what a
+reader searches for.
+
+⚠⚠ **#744 is a SCOPE GATE, and the node type was right all along.**
+`const_declaration` was already in `constant_patterns`; `_walk_tree` gates the
+constant channel on `parent_symbol is None` unless the language is in
+`_CLASS_SCOPED_CONSTANT_LANGUAGES`, and that set read `{"java", "kotlin"}`.
+#428 opened the hole for Java and #732 closed it for Kotlin — PHP is the third
+language with the shape and was considered by neither.
+
+⚠⚠ **The gate has TWO halves and membership buys only one.** With `php` in the
+set, a class constant extracted and an ENUM constant still did not:
+`parent_is_container` is computed from the spec's `container_node_types`, which
+named class, trait and interface and not `enum_declaration`. Found by reading
+the output of the fix rather than the issue.
+
+⚠ **Naming the enum a container buys the constant and nothing else**, which is
+narrower than the first version of this entry claimed. An enum METHOD was
+already owned: PHP spells it `method_declaration`, which `symbol_node_types`
+maps straight to `method`, and `parent_is_container` only promotes a
+`function`. The enum constant it does add comes out BARE, like every other
+class constant here. Caught in review, measured against the pre-change tree --
+and the claim contradicted this change's own test, which asserts
+`("EK", "constant", "EK")` two files over.
+
+⚠ Properties route through `field_patterns` (#735's channel), not
+`symbol_node_types`: `public $a = 1, $b = 2;` is one node and two
+declarations, and `_extract_symbol` returns one `Optional[Symbol]` per node, so
+the second name is structurally unreachable through that map. **`_field_symbol`
+takes a `kind` now, because the CHANNEL is not the kind** — that channel
+answers "this declaration binds N names and is not a symbol in its own right",
+and what those names ARE is the language's own word. Java calls them fields,
+PHP calls them properties.
+
+⚠⚠ **A mutation pass found a defect review would not have.** `_walk_tree`
+re-mints a member's id when it qualifies it, with the literal `"field"` —
+correct while Java was the channel's only member, and wrong the moment PHP
+emitted a `property`: `a.php::C.prop#field` for a symbol whose kind says
+`property`, an id no kind-keyed lookup resolves. Reverting that line left all
+59 tests in the two files green, because every assertion read `name`, `kind`
+and `qualified_name` and none read the id. It reads `f.kind` now, and a test
+holds it.
+
+⚠ Blast radius: every PHP repo gains its class properties and class constants,
+so symbol counts rise and `find_dead_code` — which applies no `kind` filter —
+sees an unreferenced private property as it has seen a Java field since #735.
+An enum gains its constants; nothing about an enum's methods changes.
+
+⚠ One live consumer asymmetry, named rather than fixed:
+`summarizer/file_summarize.py` counts members with `kind == "field"`, so a PHP
+class with five properties summarises as "(2 methods)" where the Java class one
+node type over gets "(2 methods, 5 fields)". Not a regression — PHP yielded no
+properties at all before — and not worth teaching one heuristic summary about
+two kinds inside a parser fix, but it is the price of the per-language kind and
+a reader should not have to discover it. Filed as #760, because the asymmetry
+outlives the release that explains it.
+
+⚠ A PHP class constant keeps the BARE name that Java and Kotlin give theirs
+(`K`, not `C.K`). `_constant_symbol` hardcodes `qualified_name = name` and only
+Rust qualifies at the call site; qualifying PHP alone would make the answer
+depend on which language you asked. Recorded, unchanged, and now asserted so
+the inconsistency is deliberate rather than accidental.
+
+⚠ The frozen grammar inventory GREW by one (272 → 273): `php.property_declaration`
+left `symbol_node_types` and the inventory's recognised set reads that map
+alone, so a form that is now extracted reads as an unnamed gap. **That is the
+blind spot #735 recorded, and the count moving in the wrong direction during a
+fix is the second instance — filed as #757.** Also filed: #758, a tracked-gap
+entry can cite an issue that does not exist, in all three ledgers.
+
+⚠ Out of scope, pinned rather than folded in: a PHP `enum_case` (`case A;`) is
+a node type no spec map names, so enum cases yield no symbol (#759).
+`test_an_enum_case_is_a_known_separate_gap` FAILS when that closes.
 
 ### Fixed - every Java field is a symbol, not only the `static final` ones (#735)
 
