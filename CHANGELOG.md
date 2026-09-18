@@ -599,6 +599,98 @@ next time this file is merged. The figure lives in the fixture, which is
 regenerated, and in `docs/harness/ARCHAEOLOGY.md`, which is gated against it.) ⚠ Untouched and still tracked:
 Swift `deinit` (#754, PR #756's gap table) and `associatedtype_declaration`,
 which is in the inventory and has never been confirmed by running the product.
+### Fixed - the spec-map guard checked that a name COULD resolve, never that it did (#745)
+
+`tests/test_language_spec_maps_agree.py` (#712) asks whether a declared node
+type has a way to get its name: an entry in `name_fields`, or a branch in
+`_extract_name`. That is a question about the MAPS. A spec could declare a
+symbol, map it to a kind, give it a name field, produce nothing, and stay
+green — and one did, for the whole life of the PHP spec.
+
+⚠⚠ **The two questions differ by one indirection, and that is where #698,
+#712, #722, #732 and #743 all lived.** `php.name_fields["property_declaration"]`
+says `name`; the grammar sets no such field on that node, so
+`child_by_field_name("name")` returns `None` and no PHP class property has ever
+been indexed. Every assertion in the old guard passes on that.
+
+⚠⚠ **A static scan cannot close it.** The compiled grammar's symbol table
+enumerates node KINDS — that is #724's property A, and it reports clean across
+every declared node type — but it cannot enumerate which FIELDS a grammar
+sets on a node, so the PHP case is invisible to it. Hence a behavioural check:
+`tests/test_declared_forms_extract.py` parses a sample per declared node type
+and asserts the declared kind comes out, the same form
+`test_every_declared_extraction_channel_actually_yields_its_kind` (#735) and
+`_CLASS_SCOPED_SAMPLES` (#732) take.
+
+**142 declared node types across 22 specs, and the first run found 12 failures
+in three classes.** ⚠ The count is re-measured on the current merge; it read
+139 when this branch opened, and #731, #734, #741, #743 and #733 have each
+added or moved forms since. The twelve findings are unchanged — only the
+denominator moved. Four were wrong SAMPLES of mine, two are new defects, and
+the rest were already tracked:
+
+- **#754, new**: a Swift `deinit` yields no symbol while the `init` beside it
+  extracts. The grammar gives `deinit_declaration` no identifier child at all —
+  its only named child is `function_body` — so there is no name to borrow. The
+  name must be BUILT, as #714 built `this[]` and #736 built `"constructor"`.
+- **#755, new**: a C++ and Arduino DATA member yields no symbol, while a member
+  function prototype in the same position does. The grammar spells both
+  `field_declaration` and the spec maps that node type to `function`, so
+  everything the function path declines has no channel to fall to. #735 in a
+  second language family, and `field_patterns` is the channel it needs.
+- **#743** (PHP properties) and **#722** (Haskell extracts nothing) were known
+  and are now pinned by a test that FAILS when either is fixed, so the record
+  cannot outlive the defect. ⚠⚠ #743's entry is already GONE, and it left by the
+  OTHER exit: #744 moved `php.property_declaration` out of `symbol_node_types`
+  into `field_patterns`, so the form stopped being DECLARED rather than
+  stopping being broken. `test_a_known_gap_is_still_a_gap` covers the first
+  exit and `test_the_two_lists_partition_every_declared_form` caught the
+  second — worth knowing before reading either failure.
+
+⚠⚠ **The sample obligation was ONE-WAY, and the merge is what showed it.**
+A declared form with no sample failed by name; a sample for a form nothing
+declares sat green forever, which is how PHP's outlived the declaration it
+was evidence for. `test_no_sample_describes_a_form_that_is_not_declared` is
+the mirror, and a stale sample is not deleted work — PHP's moved to
+`tests/test_inventory_reads_every_channel.py`, where the form is now
+recognised. The rule is that it lives where the form is declared.
+
+⚠⚠ **A row asserts TWO things, and review found the second one missing.** The
+declared kind must come out AND must stop coming out when the node type is
+removed from the spec. Without that second half one row was hollow:
+`rust.associated_type`'s sample needs a `trait` to be legal Rust, `trait_item`
+is ALSO mapped to `type`, and the row passed with `associated_type` deleted
+from the spec entirely. **A sample needs a container, a container is a declared
+form too, and a check asking only whether the kind APPEARS can be answered by
+the wrapper.** The deletion is the assertion on every row now, so a carelessly
+written future sample cannot reintroduce it -- #745's own defect class, inside
+the file written to find it.
+
+⚠ **The samples are deliberately unavoidable.**
+`test_every_declared_node_type_has_a_sample` fails BY NAME for a declared form
+with no sample, so a spec cannot grow a form that nothing exercises — the
+alternative, iterating the samples, passes by DELETION.
+`test_the_two_lists_partition_every_declared_form` closes the other route: a
+form parked in the tracked-gap table stops being checked, so both halves are
+asserted and nothing can be in neither.
+
+⚠ **The one allowance is asserted in the strict direction.** Four forms exist
+only inside a container (a C++ member prototype, a bodiless Rust `fn`, a
+bodiless Scala `def`), where `_walk_tree` promotes `function` to `method`.
+Those rows require the PROMOTED kind rather than accepting either, so a form
+that started extracting under its declared kind fails and the entry is deleted;
+`test_the_container_promotion_is_real` pins that the promotion exists at all,
+and `test_every_promotion_entry_is_a_function_form` refuses an entry for any
+other declared kind.
+
+⚠ Tracked gaps are EXCLUDED from the parametrization rather than skipped inside
+it, and that is a Floor decision: seven `pytest.skip`s would take
+`ci.skips_windows` from 24 to 31 against a ceiling of 25, spending the suite's
+skip budget on bookkeeping — against the instrument the project reads first
+when a run looks green.
+
+⚠ Added to the fast tier (92 files), because it answers a question about the
+specs that a commit can break and costs 0.6 s.
 
 ### Fixed - every Java field is a symbol, not only the `static final` ones (#735)
 
