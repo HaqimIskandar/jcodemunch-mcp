@@ -140,5 +140,12 @@ class TestDataclassFields:
         )
         syms = parse_file(src, "m.py", "python")
         summary = _heuristic_summary("m.py", syms)
-        assert "1 methods" in summary
-        assert "2 fields" in summary
+        # ⚠ "1 methods" until #760. This test's subject is that fields are
+        # counted SEPARATELY, and the plural was incidental to it; naming each
+        # kind in the summary forced a plural rule (`property` -> `properties`
+        # is irregular), and applying it to `method` is the same rule, not a
+        # second one.
+        # ⚠⚠ The whole string, because `"1 method" in "1 methods"` is True --
+        # the first replacement for the old `"1 methods"` assertion passed on
+        # the PRE-change tree too and discriminated nothing.
+        assert summary == "Defines C class (1 method, 2 fields)"

@@ -2,6 +2,114 @@
 
 ## [Unreleased]
 
+### Fixed - a file summary counts every kind of class state, and names each one (#760)
+
+A class whose members carry any kind but `field` summarised as having none. Java
+and PHP reach the index through the same channel and differ only in the word
+each language uses:
+
+    Java, 2 methods + 5 fields      ->  Defines A class (2 methods, 5 fields)
+    PHP,  2 methods + 5 properties  ->  Defines C class (2 methods)
+
+⚠⚠ **The file summary is what a reader sees BEFORE opening a file**, so a PHP
+class read as having no state at all -- the symptom #743 and #735 were about,
+surviving one layer up from the fix that closed them.
+
+The cause is one hardcoded string against a vocabulary that has four state kinds:
+
+    field_count = sum(1 for s in symbols if s.kind == "field" and ...)
+
+The vocabulary grew four times: `constant` is the old one, `field` arrived with
+the `KIND_ORDER` tuple itself in #571 (`ef259ce8`), `property` in #732 and
+`variable` in #741/#742 -- so a consumer keyed on one string sees one of four.
+`field` is the string this consumer was keyed on, and it has never been the only
+answer since the commit that introduced it. **"Which kinds are
+declared state" is a property of the KIND VOCABULARY**, so it is answered beside
+`KIND_ORDER` as `STATE_KINDS` and imported -- a second copy in the summariser is
+how this returns for the fifth kind, and
+`test_the_summariser_asks_the_vocabulary_instead_of_naming_a_kind` scans the
+module for a state-kind literal.
+
+⚠⚠ **`STATE_KINDS` says what a kind IS, never where it lives.** `constant` and
+`variable` are reached at module scope AND as class members -- a Svelte
+component's bindings are parented to the component (#752) -- which is exactly
+the mixing `KIND_ORDER`'s own `variable` comment warns about. The PARENT filter
+is what keeps them apart, and widening the kinds is the change that could drop
+it. A component with three bindings summarised as `Defines C class (0 methods)`
+before this and reads `(1 constant, 1 property, 1 variable)` now, which also
+closes the consumer loss #768's entry disclosed.
+
+⚠ **Naming a kind in prose forces a plural rule**: `property` -> `properties` is
+irregular, so `kind + "s"` is wrong, and `plural_kind` is why `1 methods` is now
+`1 method`. A zero count is omitted, so a class with no members has no empty
+parenthetical.
+
+**What is impossible now:** a class member cannot be absent from its file's
+summary because of the word its language uses for it, and a summary cannot name
+a count without naming which kind it counted.
+
+⚠⚠ **Naming the kind publishes whatever the parser decided, and for two
+languages that word is wrong.** Counting only `field` omitted these members
+SILENTLY; naming the kind turns the omission into a visible false statement.
+Measured: swift `class Sw { var count: Int = 0 }` reads
+`(1 method, 1 constant)` for a MUTABLE `var`, and csharp's `private int counter`
+plus an auto-property `Name { get; set; }` both read as `constant`
+(`1 method, 2 constants`). That is #741's own lesson -- "a JS `let` is not a
+constant" -- in two more languages, and it is a PARSER defect this module can
+only report: filed as #769 (swift) and #770 (csharp) rather than papered over
+here.
+`test_naming_the_kind_publishes_whatever_the_parser_decided` pins the current
+wrong output, the way the C++ row below pins #755, so it fails when the parser
+is fixed and the disclosure can go.
+
+⚠⚠ **A nested class borrowed a top-level namesake's members, and this change
+would have handed that leak three more kinds.** The member filter matched
+`parent.endswith(f"::{cls.name}#class")`, which cannot tell `Outer.Inner` from a
+top-level `Inner` -- `::Outer.Inner#class` does not end with `::Inner#class`
+while `::Inner#class` does -- so kotlin's nested `Inner` was reported with the
+top-level one's member and lost its own two. The leak PRE-DATES this change and
+carried `field` alone. Matching the class's own `id` closes it outright; the
+`Foo`/`MyFoo` prefix shape was always safe, so the separator was the defect.
+
+⚠⚠ **Two classes of one name report the UNION of their members, and the
+first draft of the nested-class fix reported NEITHER.** When a file holds two
+same-named classes, `_disambiguate_and_compute_complexity` rewrites the CLASS id
+to `...#class~1`/`~2` and never rewrites its children's `parent` -- so matching
+`s.parent == cls.id` exactly found nothing, and every C# `partial class` and
+Swift `class` + `extension` summarised as empty. That is this entry's own
+symptom, shipped by the remedy for a different one, and no plant could express
+it. The comparison strips the ordinal now. The union is what the old name-suffix
+match produced too, is CORRECT for a partial class (they are one class), and is
+an over-count rather than an absence for the rest; separating them needs the
+producer to renumber children, filed as #771.
+
+⚠ **A second defect closed on the way, found in review rather than aimed at:**
+a class whose qualified name carries a NAMESPACE had its members uncounted, for
+the same reason the nested class did. `tests/fixtures/cpp/sample.cpp` holds
+`cpp/sample.cpp::sample.Box#class`, which does not end with `::Box#class`, so it
+read `Defines Box class (0 methods)` and now reads `(4 methods)`. Every
+namespaced C++, C# or Elixir class was affected. Pinned by
+`test_a_namespaced_class_counts_its_members`.
+
+⚠ **A C++ class still summarises with no members, and that is #755, not this.**
+Its data members yield no symbol at all, so the summary is faithful to the
+index; counting more kinds cannot conjure a symbol the parser never emitted.
+`test_cpp_is_not_this_issue` pins that so the two absences are not confused, and
+fails -- correctly -- when #755 is fixed.
+
+⚠ `signature_fallback` in `batch_summarize.py` also branches on
+`kind == "constant"` and is deliberately NOT changed: it asks a per-kind DISPLAY
+question, not "is this class state", and its `else` already handles every kind,
+so it loses nothing. A shared set there would answer a question it is not asking.
+
+⚠ The one blind guard, found by the non-vacuity pass and recorded because the
+fix was invisible without it: `test_a_module_scope_binding_is_not_a_class_member`
+first asserted `"2 constants" not in summary`, which is true whether or not the
+module constant is counted -- a planted removal of the parent filter left all
+twelve tests green. It asserts the whole string now
+(`.claude/state/evidence/plants.md`, every plant observed).
+
+
 ### Fixed - a destructured JS binding declares names, and a Vue or Svelte script block has bindings (#751, #752)
 
 `const { a, b } = obj` yielded no symbol in javascript, typescript or tsx, and a
