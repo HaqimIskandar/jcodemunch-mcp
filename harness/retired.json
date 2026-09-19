@@ -22,6 +22,27 @@
       "replacement": "tests/test_julia_name_depth.py::test_a_type_head_is_named_at_any_depth",
       "commit": "12ee7fc4",
       "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_js_bindings.py::test_a_destructuring_pattern_is_a_known_separate_gap",
+      "lesson": "A gap test is written to FAIL when its defect is fixed, and this one did: `_js_declarator_names` required the declarator's `name` field to be an `identifier`, and a destructuring spells that field `object_pattern` or `array_pattern`, so every destructured binding was declined in javascript, typescript and tsx (#751). The lesson it carried -- that a disclosed gap is better than a silent absence, because `const { useState } = React` and `export const { GET, POST } = handlers` are ordinary module surface and a file whose exports are all destructured indexed with NONE of them -- is carried by the replacement named below. Its two samples (`const { a, b }` and `let [c, d]`) could express neither the nesting nor the anti-fabrication half: a pattern nests, and a walk collecting every `identifier` under it publishes `a` for `const { a: renamed }` and `const { a: { b } }`, where `a` names a property of the right-hand object and is bound to nothing. That half is `test_a_nested_pattern_binds_its_leaves_and_not_its_path`, whose `unbound` column fails 15 rows against the planted naive walk, and `test_a_parameter_pattern_binds_no_module_symbol`, which is what fails if the walk is ever reached from a parameter position -- the same node types, in the one place they are locals.",
+      "replacement": "tests/test_js_destructured_bindings.py::test_an_object_pattern_binds_every_name",
+      "commit": "99ef0583",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_svelte.py::test_svelte4_export_let_is_prop_constant",
+      "lesson": "The name was the defect: it asserted that a Svelte 4 prop carries kind `constant`, and a prop is the binding the PARENT assigns -- the most mutable in the file (#752). ⚠⚠ Its SECOND assertion was not the defect and caught this PR's first draft: `export const MAX` really is a constant, because Svelte does not let a parent set an `export const`, so it is not a prop at all and the first fix made it one. Practice 9 applies per ASSERTION, not per test -- half a test can be the defect's witness while the other half is a real fact nothing else records. The replacement keeps both halves and says which is which.",
+      "replacement": "tests/test_svelte.py::test_svelte4_export_let_is_a_prop_and_export_const_is_not",
+      "commit": "99ef0583",
+      "date": "2026-09-18"
+    },
+    {
+      "path": "tests/test_svelte.py::test_svelte5_runes_become_constants",
+      "lesson": "`become_constants` was the rule and the rule was wrong: the Svelte extractor emitted every matched rune through a helper hardcoding `kind=\"constant\"`, so `let count = $state(0)` -- reactive, reassigned, the whole point of the rune -- was published immutable (#752). The lesson that survives is that the KEYWORD decides and the rune does not: `$state` is reached by `let` and `$derived` by either, so a rune-keyed kind table would have been a fourth transcription of #741's rule instead of a use of it. The replacement asserts the same three rune spellings under `let`, plus a `const $derived` that the old test could not express because it had no case where the two answers differ.",
+      "replacement": "tests/test_svelte.py::test_svelte5_runes_carry_the_keyword_kind",
+      "commit": "99ef0583",
+      "date": "2026-09-18"
     }
   ]
 }
