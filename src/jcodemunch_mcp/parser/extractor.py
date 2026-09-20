@@ -755,10 +755,17 @@ def _walk_tree(
     # name is better than dropping the declaration.
     if node.type in spec.field_patterns:
         fields = _extract_fields(node, spec, source_bytes, filename, language)
+        # ⚠ Two ownership guards, one per language family, and both answer the
+        # same question: is there a symbol to own this member? A member with no
+        # owner is #698's defect, so each withholds rather than guessing.
         if is_cpp and not _cpp_member_has_an_owner(node):
-            # A file-scope or function-local object of an ANONYMOUS type. No
-            # symbol owns its members, and `parent_symbol` here is whatever
-            # class happens to enclose the function: withheld, never guessed.
+            # A file-scope or function-local object of an ANONYMOUS type (#755).
+            fields = []
+        if language in _JS_BINDING_LANGUAGES and (
+            parent_symbol is None or parent_symbol.kind != "class"
+        ):
+            # A class EXPRESSION has no symbol, so its field would be published
+            # bare, or under whatever function encloses it (#781, #803).
             fields = []
         if parent_symbol is not None:
             for f in fields:
@@ -2287,6 +2294,12 @@ def _extract_fields(
         return _extract_php_properties(node, source_bytes, filename, language)
     if node.type == "field_declaration" and language in _CPP_FIELD_LANGUAGES:
         return _extract_cpp_fields(node, source_bytes, filename, language)
+    # ⚠ Gated on the SPEC's `field_patterns` by the caller, deliberately NOT on
+    # `_JS_CLASS_FIELD_NODE_TYPES`: that set is #571's walker switch, and
+    # `test_fix_renames_and_never_removes` empties it to reproduce the pre-#571
+    # walk. Reading it here would make that emulation delete fields too.
+    if language in _JS_BINDING_LANGUAGES and node.type in ("field_definition", "public_field_definition"):
+        return _extract_js_class_field(node, source_bytes, filename, language)
     return []
 
 
@@ -2398,6 +2411,79 @@ def _extract_cpp_fields(
     ]
 
 
+
+
+#: Values that make a class field a callable member.
+_JS_FUNCTION_VALUE_TYPES = frozenset({
+    "arrow_function",
+    "function_expression",
+    "generator_function",
+})
+
+
+def _js_class_declares_method(class_body, name: str, source_bytes: bytes) -> bool:
+    """Does this class body declare a real method called `name`?"""
+    if class_body is None:
+        return False
+    for member in class_body.named_children:
+        if member.type not in ("method_definition", "abstract_method_signature", "method_signature"):
+            continue
+        member_name = member.child_by_field_name("name")
+        if member_name is not None and (
+            source_bytes[member_name.start_byte:member_name.end_byte].decode("utf-8", errors="replace")
+            == name
+        ):
+            return True
+    return False
+
+
+def _extract_js_class_field(
+    node, source_bytes: bytes, filename: str, language: str
+) -> list[Symbol]:
+    """A JS, TS or TSX class field (#781).
+
+    `tally = 0;` in a class body yielded no symbol, so a class read as
+    methods-only and a React class component lost every arrow-function handler.
+    Class state is indexed by the owner's 2026-09-19 ruling (#784).
+
+    - A field whose VALUE is a function is a `method`, the way a module-level
+      `const f = () => {}` is a `function` and not a `constant`.
+    - A TypeScript `readonly` field is a `constant`: the language says so.
+      JavaScript has no immutable field, so no JS field is one.
+    - Anything else is a `field`.
+
+    ⚠⚠ **A function field that SHADOWS a real method is a `field`.** As a
+    second `method` of that name it would take a `~2` ordinal and push the real
+    method's published id to `~1`; review measured exactly that on NestJS
+    (`use#method` became `use#method~1`). A class's declared method keeps its
+    id, and the field beside it is still found, under `#field`.
+
+    ⚠ The two grammars disagree on the name's field name (`property` in JS,
+    `name` in TS and TSX), the same trap `_js_field_scope` records. A COMPUTED
+    key (`['k'] = 1`) is an expression, not a name, and yields nothing.
+
+    ⚠ What the field HOLDS is walked separately and attributed to the field,
+    never to the class (`_js_field_scope`, #571). This only names the member.
+    """
+    name_node = node.child_by_field_name("property") or node.child_by_field_name("name")
+    if name_node is None or name_node.type not in (
+        "property_identifier",
+        "private_property_identifier",
+    ):
+        return []
+    name = source_bytes[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
+    value = node.child_by_field_name("value")
+    if (
+        value is not None
+        and value.type in _JS_FUNCTION_VALUE_TYPES
+        and not _js_class_declares_method(node.parent, name, source_bytes)
+    ):
+        kind = "method"
+    elif any(child.type == "readonly" for child in node.children):
+        kind = "constant"
+    else:
+        kind = "field"
+    return [_field_symbol(name, node, source_bytes, filename, language, kind)]
 
 
 # ---------------------------------------------------------------------------

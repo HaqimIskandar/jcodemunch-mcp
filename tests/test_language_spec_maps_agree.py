@@ -360,6 +360,11 @@ _EXTRACTION_CHANNELS = {
             # spec, and a fix applied to one spec reaches half the product.
             "cpp": ("a.cpp", "class A {\n  int probe;\n};\n"),
             "arduino": ("a.ino", "class A {\n  int probe;\n};\n"),
+            # #781. Same rule, three more copies, and the two grammars spell
+            # the form differently.
+            "javascript": ("a.js", "class A {\n  probe = 1;\n}\n"),
+            "typescript": ("a.ts", "class A {\n  probe: number = 1;\n}\n"),
+            "tsx": ("a.tsx", "class A {\n  probe: number = 1;\n}\n"),
         },
     ),
     "variable_patterns": (
