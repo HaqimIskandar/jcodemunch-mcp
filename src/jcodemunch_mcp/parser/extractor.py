@@ -9,7 +9,7 @@ from .grammar_pack import get_parser  # #608: records a grammar failure, then re
 from .racket_reader import read_racket
 
 from .astro_shared import mask_html_comments_keep_offsets, split_astro_frontmatter
-from .symbols import Symbol, make_symbol_id, compute_content_hash
+from .symbols import Symbol, make_symbol_id, compute_content_hash, STATE_KINDS
 from .languages import LanguageSpec, LANGUAGE_REGISTRY, template_underlying_language
 from .template_shared import (
     TEMPLATE_ENGINES,
@@ -1062,6 +1062,39 @@ def _extract_symbol(
 ) -> Optional[Symbol]:
     """Extract a Symbol from an AST node."""
     kind = spec.symbol_node_types[node.type]
+    # ⚠⚠ A member you can reassign is not a constant (#769, #770, #787, #788).
+    # `symbol_node_types` maps a node type to a LITERAL kind, so four specs
+    # answered `constant` for every member they bound without ever consulting
+    # the declaration's own keyword. Refined here, at the one place the mapped
+    # kind is first read, rather than in four callers.
+    if kind in STATE_KINDS:
+        refine = _STATE_KIND_REFINERS.get(language)
+        if refine is not None:
+            kind = refine(node, source_bytes) or kind
+        # ⚠⚠ A MEMBER word for something that belongs to no type is the other
+        # half of #769's own sentence: "`variable` is the module-scope word and
+        # a class member belongs to a type." `KIND_ORDER` says the same where
+        # `variable` is defined -- reusing `property` for a top-level binding
+        # "would mix module bindings into every consumer asking about a class's
+        # members." The first draft of #769/#787 took the class half and left a
+        # Swift top-level `var` reading `property` with `parent=None`.
+        #
+        # ⚠⚠ The condition is NO TYPE TO OWN IT, which is wider than module
+        # scope and deliberately so: `parent_is_container` is false for a
+        # FUNCTION parent too, so a mutable local (`func f() { var v = 3 }`)
+        # takes `variable` with its function as parent. That is the right answer
+        # -- a local is not a member of anything -- and it is asserted, because
+        # an earlier draft of this comment said "module scope" while the branch
+        # fired on locals, and a comment that describes a narrower rule than the
+        # code is how the next reader writes the wrong test. Java, PHP and C++
+        # fields are unaffected by construction -- their declarations only occur
+        # inside a type -- and `field_patterns` is a different code path.
+        if (
+            kind in _MEMBER_ONLY_STATE_KINDS
+            and not parent_is_container
+            and language in _MODULE_SCOPE_VARIABLE_LANGUAGES
+        ):
+            kind = "variable"
 
     # Extract name first. A cleanly-named symbol is kept even when a syntax
     # error sits deeper in its body: the old blanket `node.has_error` bail
@@ -1262,6 +1295,137 @@ def kotlin_property_is_constant(node, source_bytes: bytes) -> bool:
     if name is None:
         return False
     return name.isupper() or (len(name) > 1 and name[0].isupper() and "_" in name)
+
+
+def _csharp_member_kind(node, source_bytes: bytes) -> Optional[str]:
+    """Only a `const` field is a constant in C# (#770).
+
+    ⚠⚠ **A NARROWING, and the spec states the rest.** `CSHARP_SPEC` declares
+    `field_declaration` a `field`, `property_declaration` a `property` and the
+    two event forms likewise, because that is what the member IS.
+    `tests/test_declared_forms_extract.py` asserts that what a spec advertises
+    is what the product emits, so a predicate that contradicted the map would
+    fail there -- correctly. This only removes the one case the map cannot see.
+
+    ⚠ `static readonly` is deliberately NOT a constant. Java's rule needs both
+    `static` and `final` because Java has no other way to spell one; C# has
+    `const`, so `readonly` is the keyword chosen when you do not mean it.
+
+    ⚠ A `modifier` node wraps its keyword as a typed CHILD (`const`, `readonly`,
+    `static`), so the test is on the grandchild's type, not on the modifier's
+    text. Reading the text would work until someone writes a comment between.
+    """
+    if node.type == "field_declaration" and _csharp_has_modifier(node, "const"):
+        return "constant"
+    return None
+
+
+def _csharp_has_modifier(node, keyword: str) -> bool:
+    return any(
+        child.type == "modifier"
+        and any(g.type == keyword for g in child.children)
+        for child in node.children
+    )
+
+
+def _swift_member_kind(node, source_bytes: bytes) -> Optional[str]:
+    """Only a `let` is a constant in Swift (#769).
+
+    ⚠⚠ A NARROWING, like the C# one: `SWIFT_SPEC` declares both property forms
+    `property`, which is Swift's own word for a class member (stored or
+    computed) and what Kotlin's `var` already carries (#732). This removes the
+    `let` case, which the map cannot see because `let` and `var` share one node.
+
+    ⚠ A protocol requirement with no binder is left to the spec's `property`:
+    a requirement is never a constant, so there is nothing to narrow.
+    """
+    if node.type not in ("property_declaration", "protocol_property_declaration"):
+        return None
+    binding = next(
+        (c for c in node.children if c.type == "value_binding_pattern"), None
+    )
+    if binding is None:
+        return None
+    return "constant" if any(g.type == "let" for g in binding.children) else None
+
+
+def solidity_state_variable_kind(node) -> Optional[str]:
+    """A contract's state variable is a member, and only `constant` is one (#788).
+
+    ⚠⚠ Public because `_parse_solidity_symbols` is a CUSTOM parser and does not
+    go through `_extract_symbol`, so the registry below cannot reach it. It asks
+    this same function rather than carrying its own copy of the rule -- the #732
+    lesson that a second transcription drifts.
+
+    ⚠ `immutable` is a `field`, for the reason C# `readonly` is: Solidity has a
+    dedicated `constant` keyword, so `immutable` is the one you choose when you
+    do not mean it. The grammar spells `constant` as an ANONYMOUS child and
+    `immutable` as a named one, which is why this tests types and not `is_named`.
+    """
+    if node.type != "state_variable_declaration":
+        return None
+    return "constant" if any(c.type == "constant" for c in node.children) else "field"
+
+
+#: language -> (node, source_bytes) -> kind, consulted by `_extract_symbol`
+#: whenever `symbol_node_types` maps a node to a STATE kind.
+#:
+#: ⚠⚠ ONE registry, not N free functions, and that is the point. Four
+#: per-language mutability predicates already existed
+#: (`kotlin_property_is_constant`, `java_field_is_constant`,
+#: `js_binding_is_constant`, `_python_name_is_constant`), each reached from its
+#: own call site, and #770 is what happens when a fifth language needs the
+#: question and nobody sees that it was already asked four times.
+#: `java_field_is_constant` says it outright: "the rule must be MOVED rather
+#: than copied -- a second transcription works on the day it is written and
+#: drifts into a gap or a double-emit later."
+#:
+#: ⚠ The RULE the four share, stated once: a member is `constant` only when the
+#: language's own dedicated constant keyword is used. C# has `const`, so
+#: `readonly` is not it; Solidity has `constant`, so `immutable` is not it;
+#: Swift has `let` and Scala has `val`. Everything else is the language's word
+#: for a member -- `field` where it calls them fields, `property` where it calls
+#: them properties (#743's split, which is why this returns three words).
+#:
+#: ⚠⚠ **Scala is deliberately ABSENT and that is the shape to copy.** It spells
+#: `val` and `var` as different NODE TYPES, so `SCALA_SPEC.symbol_node_types`
+#: answers on its own and a predicate here would be a second place to look. A
+#: language belongs in this table only when one node type carries both meanings.
+_STATE_KIND_REFINERS: dict[str, Any] = {
+    "csharp": _csharp_member_kind,
+    "swift": _swift_member_kind,
+}
+
+#: The state kinds that assert MEMBERSHIP of a type. A binding with no container
+#: to own it cannot carry one; `variable` is the module-scope word (`KIND_ORDER`).
+#:
+#: ⚠ `constant` is deliberately absent: a top-level `let`, `val` or `const` is a
+#: constant wherever it sits, and demoting it would change what a module-scope
+#: immutable has always been indexed as.
+_MEMBER_ONLY_STATE_KINDS = frozenset({"field", "property"})
+
+#: Languages whose module-scope binding is demoted out of a member kind.
+#:
+#: ⚠⚠ **A NAMED SET, not "every language", and Kotlin is the reason.** Kotlin
+#: has published a top-level `val`/`var` as `property` since #732, which
+#: contradicts `KIND_ORDER`'s own rule -- and demoting it here would be wrong a
+#: SECOND way: `variable` is defined there as a module-scope MUTABLE binding,
+#: and a Kotlin top-level `val` is immutable without being SCREAMING_CASE, so
+#: `kotlin_property_is_constant` has already declined it. Neither `property` nor
+#: `variable` is obviously right for it, that decision is outside #769/#770/
+#: #787/#788, and it moves ids in a released language. Filed instead.
+#:
+#: ⚠ Membership is safe for these two BY CONSTRUCTION: their refiner OR SPEC MAP
+#: has already turned every immutable module-scope binding into a `constant`, so
+#: whatever still carries a member word here is reassignable, which is exactly
+#: what `variable` means. **Swift gets that from `_swift_member_kind` and Scala
+#: from `SCALA_SPEC.symbol_node_types`** -- Scala has no refiner at all, and an
+#: earlier version of this sentence said "their refiners" and would have sent
+#: the next author hunting for one. A language added to this set needs that same
+#: property checked, by whichever of the two answers for it, plus a row in
+#: `tests/test_member_state_is_not_a_constant.py` -- the constant side of each
+#: row is what proves the property holds.
+_MODULE_SCOPE_VARIABLE_LANGUAGES = frozenset({"swift", "scala"})
 
 
 def _extract_name(node, spec: LanguageSpec, source_bytes: bytes) -> Optional[str]:
@@ -11436,10 +11600,15 @@ def _parse_solidity_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
             name = _first_identifier(node)
             if name:
                 qualified = f"{scope}.{name}" if scope else name
+                # ⚠ `uint tally = 0` is reassignable and was published as a
+                # constant (#788). The rule lives in one place for every
+                # language that asks it; this parser is custom and cannot reach
+                # `_STATE_KIND_REFINERS`, so it asks the same function.
+                kind = solidity_state_variable_kind(node) or "constant"
                 symbols.append(Symbol(
-                    id=make_symbol_id(filename, qualified, "constant"),
+                    id=make_symbol_id(filename, qualified, kind),
                     file=filename, name=name, qualified_name=qualified,
-                    kind="constant", language="solidity",
+                    kind=kind, language="solidity",
                     signature=_text(node).split(";")[0].strip()[:120],
                     docstring="",
                     line=node.start_point[0] + 1,

@@ -2,6 +2,104 @@
 
 ## [Unreleased]
 
+### Fixed - a member you can reassign is not a constant (#769, #770, #787, #788)
+
+A C# field and auto-property, a Swift `var`, a Scala `var` and a Solidity state
+variable were all indexed as `kind="constant"`. A reader filtering `constant` on
+a C# repo got every field, property and event in it, and a reader filtering
+`field` or `property` got none of them.
+
+`LanguageSpec.symbol_node_types` maps a node type to a LITERAL kind, and four
+specs answered `constant` for every member they bound without ever consulting
+the declaration's own keyword. #741 settled this for JS/TS ("a JS `let` is not a
+constant") and #732 refused the same shortcut for Kotlin; nothing carried the
+question to the next four languages.
+
+**The spec now declares what the member IS and a predicate only narrows it.**
+`field_declaration` is a `field`, `property_declaration` a `property`, both C#
+event forms likewise, and Swift's two property forms are `property` — which is
+Swift's own word for a class member and what Kotlin's `var` already carries
+(#732). `_csharp_member_kind` and `_swift_member_kind` remove exactly one case
+each, the one the map cannot see: `const` and `let`.
+
+⚠⚠ The first draft put every rule in the predicates and left the specs
+advertising `constant`. `tests/test_declared_forms_extract.py` failed on
+`csharp.event_declaration`, which is its whole purpose: what a spec advertises
+is what the product must emit. The spec was wrong and the predicate was covering
+for it.
+
+⚠ **Scala needed no predicate at all** and is deliberately absent from the
+registry: it spells `val` and `var` as different node types, so the map answers
+alone. A language belongs there only when one node type carries both meanings.
+Its `var_definition` also leaves `constant_patterns`, where it disagreed with
+`symbol_node_types` about the same node — inert today (`_extract_constant` has
+no Scala branch, so nothing was double-emitted) and the #732 configuration
+waiting for someone to add the missing branch.
+
+⚠ **One ruling, argued rather than inherited: `static readonly` is a `field`.**
+Java's `java_field_is_constant` requires both `static` and `final` because Java
+has no other way to spell a constant. C# has `const`, so `readonly` is the
+keyword you choose when you do not mean one; Solidity's `immutable` is the same
+shape beside its `constant`. The rule the four share: a member is `constant`
+only when the language's own dedicated constant keyword is used.
+
+The kinds published in a file summary move with them. `Defines Cs class (1
+method, 2 constants)` reads `(1 method, 1 field, 1 property)`, and #760's
+disclosure that the summary could publish a word the parser got wrong is
+withdrawn — `test_naming_the_kind_publishes_whatever_the_parser_decided` was
+pinned to the wrong output and is inverted, not retired, the way
+`test_cpp_is_not_this_issue` was when #755 closed.
+
+⚠ **#788 is half of its issue.** Its Solidity members are qualified by the
+contract's name and carry no `parent`, so its cell stays in `_GAPS` and it
+closes with the ownership family (#774, #776, #779, #782, #778), not here.
+
+⚠⚠ **A binding with no type to belong to is a `variable`, not a member kind**,
+and the first draft of this change got that wrong: a Swift top-level `var` came
+out `property` with `parent=None`. #769 says it in one sentence -- "`variable`
+is the module-scope word and a class member belongs to a type" -- and this fix
+had taken the class half. `KIND_ORDER`'s own entry for `variable` gives the
+cost: reusing a member kind for a module binding mixes it into every consumer
+asking about a class's members. The demotion is generic rather than per
+language for the languages it covers. Found in review; the fixture held only
+class bodies, so nothing in the change could fail on it (#699's lesson, inside
+the fix for it).
+
+⚠⚠ **The demotion NAMES its languages (`swift`, `scala`) and Kotlin is the
+reason.** The first draft applied it everywhere and turned Kotlin's top-level
+`property` -- published since #732 -- into `variable`, which would be wrong a
+second way: `variable` is defined as a module-scope MUTABLE binding and a Kotlin
+top-level `val` is immutable without being SCREAMING_CASE, so
+`kotlin_property_is_constant` has already declined to call it a constant.
+Neither word is obviously right, and the decision moves ids in a released
+language, so it is **#807** rather than a silent ride-along here. The two
+languages in the set are safe by construction: their refiners turn every
+immutable module-scope binding into a `constant` first, so whatever still
+carries a member word is reassignable -- Swift from `_swift_member_kind`, Scala
+from its spec map, since Scala has no refiner. The exclusion is pinned by a
+test, so widening it is deliberate.
+
+⚠ The demotion's condition is **no type to own it**, which is wider than module
+scope: a mutable FUNCTION-LOCAL takes `variable` too, with its function as
+parent. That is the right answer -- a local is a member of nothing -- and it is
+asserted, because an earlier draft of the rule's comment said "module scope"
+while the branch already fired on locals.
+
+Ids move for these members (`Cs.counter#constant` becomes `Cs.counter#field`).
+⚠ `PARSER_GENERATION` is NOT bumped: #732 took it 7 to 8 and that bump is still
+under `[Unreleased]`, so any index a release of this can reach re-parses under
+it already.
+
+⚠ **#806 is filed from this change and is NOT fixed here.** Five tools
+(`get_group_contracts`, `get_repo_map`, `get_repo_outline`,
+`get_symbol_importance`, `find_implementations`) carry a literal kind set that
+predates `field` and `property`, so a member arriving under its real kind is
+excluded outright or ranked by an unchosen default. The gap is older than this
+fix -- Java fields, PHP and Kotlin properties, C++ data members and Python/JS
+class state already land there -- and this widens it to four more languages,
+which is what made it visible. `STATE_KINDS` exists for exactly this and
+`file_summarize` already asks it (#760).
+
 ### Fixed - a class constant is owned by its class, in every language that has one (#780, #783)
 
 A Java `static final` field, a PHP class `const` and a Kotlin `const val` were
