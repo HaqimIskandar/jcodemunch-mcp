@@ -2,6 +2,92 @@
 
 ## [Unreleased]
 
+### Fixed - an Apex, D, Groovy or Objective-C class's state is indexed (#774, #776, #779, #782)
+
+Four custom parsers walked a class body and emitted the METHODS only. Every
+field, every property and every constant in those four languages was absent from
+the index — not mis-kinded, absent — so a reader asking what a class holds was
+told it holds nothing, and the file summary's member count had nothing to count.
+The member-kind audit had carried nine ABSENT cells for them since it was
+written.
+
+This is the second mechanism in the same functions #788 touched. That change
+gave these parsers their owner and closed Solidity alone, because Solidity was
+the only one of the five already extracting its state. Ownership went first on
+purpose: doing this first would have meant writing owner-less `Symbol(...)`
+constructions and immediately fixing them. Every construction added here asks
+`_member_of`, and a test asserts it.
+
+**Each grammar was read, not guessed.** Apex hangs a member off
+`field_declaration > variable_declarator` and spells a PROPERTY as the same node
+carrying an `accessor_list`. D uses `variable_declaration > declarator` with the
+mutability qualifier as a `type_ctor` inside the type. Objective-C has two
+different nodes for the two words — an ivar inside `{ }` and `@property` — which
+is #743's split, where the channel is not the kind. Groovy has no field node at
+all: a field is a `command` of bare identifier units carrying an `=`.
+
+**Two of the kinds are rulings and they point opposite ways**, so each is pinned
+alone. Apex and Groovy are Java-shaped and have no `const`, so `static final` IS
+their constant spelling — the opposite of C#'s `static readonly`, which #770
+ruled a `field` precisely because C# also has `const` and `readonly` is the
+keyword you choose when you do not mean one. D's `immutable` is a `constant` for
+the same reason in reverse: Solidity's `immutable` is a `field` because Solidity
+also has `constant`, and D has no such pair. The shared rule under all four is
+the one `_STATE_KIND_REFINERS` already states — a member is `constant` only when
+the language's own dedicated constant keyword is used.
+
+`_csharp_has_modifier` is `has_modifier_keyword` now. C# hangs `modifier` nodes
+directly off a declaration and Apex wraps them in a `modifiers` node; one
+grammar question, two shapes, and writing the second as its own function is what
+the 08-19 standing lesson names.
+
+**Groovy's rule is the operator's source text, and three grammar facts forced
+that.** It has no field node and no assignment node — only `unit` runs and
+`operators` tokens — and `==` is TWO ADJACENT `operators` nodes each holding a
+bare `=`, `!=` is ONE `operators(=)` with the `!` dropped from the tree
+entirely, and `<=` puts an `ERROR` node where the name would be. So no count,
+adjacency or ERROR test can separate a declaration from a comparison: the
+contiguous operator run must read exactly `=`, with nothing but whitespace
+between it and the name. Eighteen statements are parametrized over that rule,
+declarations and calls alike.
+
+⚠ **What that rule costs, measured per shape rather than summarised.** Five
+kinds of real Groovy field go unindexed: one with no initialiser (`int tally`
+and the call `foo bar` are the same two bare units), one whose type is generic
+(`Map<String, Integer>` splits on its own comma and the name lands in an ERROR
+node), and one with a comment or a newline between the name and the `=`, which
+the whitespace clause needed to reject `!=`. Every one fails toward absence,
+never fabrication, and each is pinned so a later widening has to move a line and
+re-run the calls this keeps out.
+
+⚠ A name on the VALUE side is not a declaration: `int a = b = 1` declares `a`
+and assigns to an existing `b`, and emitting `b` would invent a member.
+
+⚠⚠ **The reported list was not the list, again.** Probing every class-bearing
+language with a custom parser found six more whose class state is absent and
+which the audit does not sample — Zig, PowerShell and MATLAB index their methods
+and lose their state (#811); Pascal, F# and Nim index the container and no
+members at all (#812). The reusable part is why nothing was tracking them: the
+audit's `_SAMPLES` covers 22 languages, and
+`test_every_class_bearing_spec_is_sampled_or_excused` is one-directional by
+construction for custom extractors, because a custom parser declares no
+`symbol_node_types` for the check to read. The enumeration built to stop this
+defect class being found one language per fix cannot see the languages it does
+not sample.
+
+⚠ **Scope, stated because the node type does not draw it.** D spells a
+module-scope `int x = 1;` with the same `variable_declaration` it uses inside an
+aggregate, so this extracts members only. Whether a module-scope D binding
+should be indexed at all, and as which kind, is its own decision with #807's
+shape; a test asserts it has not been made here by accident.
+
+Multi-declarator lines give every name, in Apex, D and Groovy alike —
+`int a = 1, b = 2` is two fields. Reading only one of them would index half a
+line.
+
+Nine `_GAPS` entries close with this. No custom-parser language has one left;
+every remaining row in the audit is spec-driven.
+
 ### Fixed - a class member carries its owner, not just its owner's name (#788)
 
 Apex, D, Groovy, Objective-C and Solidity are parsed by custom extractors rather
