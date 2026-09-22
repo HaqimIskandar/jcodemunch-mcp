@@ -518,6 +518,14 @@ def _parse_with_spec(
     if calls:
         _attribute_calls_to_symbols(symbols, calls)
 
+    # ⚠ AFTER call attribution, deliberately. A struct field's span sits inside
+    # its type's, so adding the fields first would let them claim calls the
+    # type should have carried.
+    if language == "go":
+        _attach_go_receivers_and_fields(
+            tree.root_node, symbols, source_bytes, filename
+        )
+
     return symbols
 
 
@@ -1438,6 +1446,183 @@ def solidity_state_variable_kind(node) -> Optional[str]:
     if node.type != "state_variable_declaration":
         return None
     return "constant" if any(c.type == "constant" for c in node.children) else "field"
+
+
+def _go_receiver_type_name(method_node, source: "ByteSlicedSource") -> Optional[str]:
+    """The NAME of the type a Go method hangs off, or None (#778).
+
+    The receiver is the method's FIRST `parameter_list`, and its type sits at
+    one of three depths: `(i ID)` is a bare `type_identifier`, `(a *Audit)`
+    wraps it in `pointer_type`, and `(b *Box[T])` wraps that in `generic_type`.
+    The first `type_identifier` in a depth-first walk is the base type in all
+    three -- the receiver's own variable is an `identifier`, a different node
+    type, so it cannot be mistaken for one.
+    """
+    receiver = next(
+        (c for c in method_node.children if c.type == "parameter_list"), None
+    )
+    if receiver is None:
+        return None
+    stack = list(receiver.children)
+    while stack:
+        node = stack.pop(0)
+        if node.type == "type_identifier":
+            return source[node.start_byte:node.end_byte]
+        stack = list(node.children) + stack
+    return None
+
+
+def _go_field_names(field_node, source: "ByteSlicedSource") -> list[str]:
+    """Every member name one Go `field_declaration` declares.
+
+    `X, Y int` carries TWO `field_identifier` children and is two members --
+    reading one indexes half a line. An EMBEDDED field carries NONE: the
+    grammar gives only the type, and Go's own selector for it is the type's
+    base name (`a.Reader` for an embedded `io.Reader`), so that is the name it
+    takes. Skipping it would report a struct as having fewer members than it
+    has.
+    """
+    named = [
+        source[c.start_byte:c.end_byte]
+        for c in field_node.children
+        if c.type == "field_identifier"
+    ]
+    if named:
+        return named
+    embedded = [c for c in field_node.children if c.type != "field_identifier"]
+    while embedded:
+        node = embedded.pop(0)
+        if node.type == "type_identifier":
+            return [source[node.start_byte:node.end_byte]]
+        embedded = list(node.children) + embedded
+    return []
+
+
+def _attach_go_receivers_and_fields(
+    root_node, symbols: list[Symbol], source_bytes: bytes, filename: str
+) -> None:
+    """Give a Go method its receiver and a Go struct its fields (#778).
+
+    ⚠⚠ **A SECOND PASS, and that is forced by the language.** Go does not
+    require a type to be declared before a method on it, so a walk that
+    resolved a receiver as it met one would answer `unknown` for every method
+    that came first -- and would look correct on any fixture written in the
+    other order. This runs against the types the walk already found.
+
+    ⚠⚠ **Ids MOVE for every Go method**: `make_symbol_id` is keyed on the
+    qualified name, and `RunIt` becomes `Audit.RunIt`. Go is the only language
+    in this family that pays that, because the other five were already
+    qualified and only lacked `parent`.
+
+    ⚠⚠ **Scope is what makes a Go type name an identity, and only a
+    package-level type can carry a method.** A `type` inside a function body
+    is a DIFFERENT type that happens to share a name, so an owner table keyed
+    on the bare name let a function-local `type Config` take the package-level
+    `Config`'s method AND its fields: the method got a wrong owner, a wrong
+    qualified name and a wrong id, the local type gained a field it does not
+    declare, and the real type was left reporting zero members -- the very
+    symptom #778 exists to fix. **That is fabrication where the pre-#778
+    answer was an honest absence.** Both loops below read `root_node.children`
+    and never enter a body.
+
+    ⚠⚠ **A LINE IS NOT AN IDENTITY EITHER.** Keying methods on `start_point`
+    collapsed two declarations beginning on one line -- `func (a A) X() {};
+    func (a A) Y() {}` resolved `Y` and left `X` bare, because the second write
+    to the dict won. gofmt splits that line, which is why such a bug survives
+    review and surfaces in the one file nobody formatted. Both joins are on the
+    declaration node's START BYTE, which is what the spec walk records as a
+    symbol's `byte_offset`; if that ever stops holding, the lookup misses and
+    the member keeps today's answer, which is the safe direction.
+
+    ⚠ A receiver whose type is not in THIS file keeps today's answer. Go allows
+    the type to live in another file of the package, this parser sees one file,
+    and inventing an owner id would be worse than leaving the method
+    unqualified -- absence over fabrication.
+
+    ⚠ A struct nested anonymously inside a field (`Inner struct { Deep int }`)
+    contributes `Inner` and not `Deep`: only the outer `field_declaration_list`
+    is read. That under-reports in the same direction the pre-#778 tree did and
+    is pinned as a limit, not a claim.
+    """
+    source = ByteSlicedSource(source_bytes)
+    type_at = {s.byte_offset: s for s in symbols if s.kind == "type"}
+    method_at = {s.byte_offset: s for s in symbols if s.kind == "method"}
+    if not type_at:
+        return
+
+    # PACKAGE-LEVEL specs only, so a function-local type of the same name is
+    # never a candidate owner.
+    types_by_name: dict[str, Symbol] = {}
+    spec_owners: list[tuple[object, Symbol]] = []
+    for decl in root_node.children:
+        if decl.type != "type_declaration":
+            continue
+        owner = type_at.get(decl.start_byte)
+        if owner is None:
+            continue
+        for spec in decl.children:
+            if spec.type != "type_spec":
+                continue
+            # The type's OWN name is the first `type_identifier` child: `type
+            # ID int` carries two, and the second is what it is defined AS.
+            name_node = next(
+                (c for c in spec.children if c.type == "type_identifier"), None
+            )
+            if name_node is None:
+                continue
+            name = source[name_node.start_byte:name_node.end_byte]
+            # ⚠ A GROUPED `type ( A struct{...}; B struct{...} )` yields ONE
+            # symbol for the whole declaration, so the second spec would
+            # otherwise hand B's fields to A. The name check refuses that; B
+            # stays unindexed, which is what it already was.
+            if owner.name != name:
+                continue
+            types_by_name.setdefault(name, owner)
+            spec_owners.append((spec, owner))
+    if not types_by_name:
+        return
+
+    # A Go method is only ever declared at package scope, so this does not
+    # descend either.
+    for node in root_node.children:
+        if node.type != "method_declaration":
+            continue
+        owner = types_by_name.get(_go_receiver_type_name(node, source) or "")
+        method = method_at.get(node.start_byte)
+        if owner is None or method is None:
+            continue
+        qualified, owner_id = _member_of(owner, method.name)
+        method.qualified_name = qualified
+        method.parent = owner_id
+        method.id = make_symbol_id(filename, qualified, method.kind)
+
+    for node, owner in spec_owners:
+        struct = next((c for c in node.children if c.type == "struct_type"), None)
+        if struct is None:
+            continue
+        for field_list in struct.children:
+            if field_list.type != "field_declaration_list":
+                continue
+            for field in field_list.children:
+                if field.type != "field_declaration":
+                    continue
+                for name in _go_field_names(field, source):
+                    qualified, owner_id = _member_of(owner, name)
+                    symbols.append(Symbol(
+                        id=make_symbol_id(filename, qualified, "field"),
+                        file=filename, name=name, qualified_name=qualified,
+                        kind="field", language="go",
+                        signature=source[field.start_byte:field.end_byte].strip()[:120],
+                        docstring="",
+                        line=field.start_point[0] + 1,
+                        end_line=field.end_point[0] + 1,
+                        byte_offset=field.start_byte,
+                        byte_length=field.end_byte - field.start_byte,
+                        content_hash=compute_content_hash(
+                            source_bytes[field.start_byte:field.end_byte]
+                        ),
+                        parent=owner_id,
+                    ))
 
 
 def _member_of(parent: Optional[Symbol], name: str) -> tuple[str, Optional[str]]:
