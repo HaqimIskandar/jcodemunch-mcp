@@ -78,6 +78,13 @@
       "replacement": "tests/test_rust_fidelity.py::test_variants_and_closures_are_not_symbols_but_a_field_now_is",
       "commit": "fb192d8a",
       "date": "2026-09-22"
+    },
+    {
+      "path": "tests/test_a_go_method_belongs_to_its_receiver.py::test_a_grouped_type_declaration_does_not_hand_one_types_fields_to_another",
+      "lesson": "The test pinned a REFUSAL that existed only because of a gap next door. A grouped Go `type ( A ...; B ... )` yielded one symbol for the whole declaration (#817), so #778's receiver pass had to check the owner's name and skip every spec but the first -- B's fields stayed unindexed, and the assertion `'Theirs' not in found` recorded that as the desired answer. It was the gap's witness, not a guard on the pass (Practice 9). #817 makes `type_spec` the symbol node, so each spec resolves to its own owner and the name check is deleted from the source; keeping the assertion would pin a state nothing produces. What the test was really protecting -- A never growing a member it does not declare -- survives in the replacement, which now asserts BOTH owners instead of one owner and one absence. The wider lesson is the one the guard could not carry: an absence assertion whose cause is a defect elsewhere ages into a claim that the defect is correct.",
+      "replacement": "tests/test_a_go_method_belongs_to_its_receiver.py::test_a_grouped_type_declaration_gives_each_types_fields_to_that_type",
+      "commit": "6d7edc78",
+      "date": "2026-09-22"
     }
   ]
 }
