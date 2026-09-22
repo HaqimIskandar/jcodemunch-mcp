@@ -33,7 +33,13 @@ logger = logging.getLogger(__name__)
 # same nodes to a channel that could not accept them: disjoint, but no longer
 # exhaustive. Measured before the fix: `MAX_SIZE`, `INNER_CONST` and
 # `BAR_CONST` were emitted by neither channel. Found in review.
-_CLASS_SCOPED_CONSTANT_LANGUAGES = frozenset({"java", "kotlin", "php"})
+# ⚠⚠ gdscript joined in #777, and it is the cheapest entry this set has taken:
+# `const_statement` was ALREADY in `GDSCRIPT_SPEC.constant_patterns` and a
+# file-scope `const LIMIT = 3` already indexed, so the channel existed and the
+# class body was the one scope it could not reach. The gap read as "GDScript
+# constants are missing" and was really "the gate stops at file scope" -- which
+# is why the fix is a name in this set rather than a second extractor.
+_CLASS_SCOPED_CONSTANT_LANGUAGES = frozenset({"java", "kotlin", "php", "gdscript"})
 
 #: Languages whose constants may be declared inside a FUNCTION body and are
 #: still worth indexing. Separate from the class-scoped set above because it
@@ -2759,7 +2765,85 @@ def _extract_fields(
     # walk. Reading it here would make that emulation delete fields too.
     if language in _JS_BINDING_LANGUAGES and node.type in ("field_definition", "public_field_definition"):
         return _extract_js_class_field(node, source_bytes, filename, language)
+    # ⚠⚠ Dart and GDScript spell a member and a LOCAL with the same node type,
+    # so each is gated on what encloses it. `_walk_tree` cannot supply that --
+    # its `parent_symbol` is the nearest SYMBOL, which inside a method body is
+    # the method -- and the grammar can: a member is a direct child of a class
+    # body. Asking the node its own ancestry keeps the two languages out of the
+    # locality-predicate business #732 and #776 both paid for.
+    if language == "dart" and node.type == "declaration":
+        if not _dart_member_has_an_owner(node, spec):
+            return []
+        return _extract_dart_members(node, source_bytes, filename, language)
+    if language == "gdscript" and node.type == "variable_statement":
+        if node.parent is None or node.parent.type != "class_body":
+            return []
+        return [
+            _field_symbol(name, node, source_bytes, filename, language)
+            for name in _gdscript_statement_names(node, source_bytes)
+        ]
+    if language == "ruby" and node.type in ("assignment", "call"):
+        return _extract_ruby_members(node, source_bytes, filename, language)
     return []
+
+
+#: The BODY node types a Dart data member may sit directly in.
+#:
+#: ⚠⚠ **MEASURED against the grammar, not named from the language.** DART_SPEC
+#: lists three containers -- class, mixin and extension -- so the obvious set
+#: was `class_body`, `extension_body` and `mixin_body`. There is no
+#: `mixin_body`: a `mixin_declaration` holds a `class_body`, so that third
+#: entry would have been inert, a guard written against a spelling the grammar
+#: does not use. Only `extension_body` is its own node type.
+#:
+#: ⚠ **This set no longer carries the decision and is kept only to name the two
+#: body types.** `_dart_member_has_an_owner` asks
+#: `DART_SPEC.container_node_types` for the part that matters, and every owner
+#: of these two bodies is already in that list -- so the set is derivable from
+#: it. Flagged in review as the shape that rots (`entry_point_patterns` was
+#: written in one place and read in none). If a third body type ever appears,
+#: check whether this set should be computed rather than listed.
+_DART_MEMBER_HOLDERS = frozenset({"class_body", "extension_body"})
+
+
+def _dart_member_has_an_owner(node, spec: LanguageSpec) -> bool:
+    """Is this `declaration` a member of something that HAS a symbol?
+
+    ⚠⚠ **The body type alone is not the question, and taking it for the
+    question published a member with no owner.** An `extension type Meters(int
+    v) { static const int CAP = 1; }` holds a `class_body` like a class does,
+    but `extension_type_declaration` is in no spec's `container_node_types`, so
+    nothing stands above it to be the parent -- `CAP` came out bare, which is
+    #698's complaint and #788's whole subject one language later.
+
+    ⚠ So the holder's OWNER is asked of `DART_SPEC.container_node_types`, the
+    list that already decides what `_walk_tree` will have a parent symbol for.
+    Reproducing that list here would be a second copy of the same rule, which
+    is the mechanism this project keeps paying for.
+
+    ⚠ A Dart `enum` body and an `extension type` body therefore contribute no
+    members. Both fail toward absence and are pinned as limits.
+    """
+    holder = node.parent
+    if holder is None or holder.type not in _DART_MEMBER_HOLDERS:
+        return False
+    owner = holder.parent
+    return owner is not None and owner.type in spec.container_node_types
+
+
+def _gdscript_statement_names(node, source_bytes: bytes) -> list[str]:
+    """The name a GDScript `var` statement binds.
+
+    The grammar gives it as a `name` child. ⚠ GDScript has no multi-declarator
+    form, so this is one name per statement -- stated rather than assumed,
+    because every other language in this family needed the plural.
+    """
+    source = ByteSlicedSource(source_bytes)
+    return [
+        source[c.start_byte:c.end_byte]
+        for c in node.children
+        if c.type == "name"
+    ]
 
 
 #: The specs whose grammar spells a data member `field_declaration`.
@@ -3323,6 +3407,177 @@ def _extract_java_fields(
     return [
         _field_symbol(name, node, source_bytes, filename, language)
         for name in _java_declarator_names(node, source_bytes)
+    ]
+
+
+#: The `attr_*` family. ⚠ All three, because a guard written against
+#: `attr_accessor` alone is fixed for that spelling only and `attr_reader` is
+#: the commonest of them in real Ruby.
+_RUBY_ATTR_CALLS = frozenset({"attr_accessor", "attr_reader", "attr_writer"})
+
+
+def _ruby_class_body(node) -> bool:
+    """Is this node a direct statement of a `class` or `module` body?
+
+    ⚠⚠ **Ruby spells a member and a local the same way.** `LIMIT = 3` in a
+    class body and `total = 1` in a method are both `assignment`, and
+    `attr_accessor :view` and `puts x` are both `call`. Node type alone cannot
+    separate them, so scope does: a member is a DIRECT child of the
+    `body_statement` of a class or module. A method body is its own
+    `body_statement` one level down, so nothing inside one reaches here.
+    """
+    holder = node.parent
+    if holder is None or holder.type != "body_statement":
+        return False
+    owner = holder.parent
+    return owner is not None and owner.type in ("class", "module")
+
+
+def _extract_ruby_members(
+    node, source_bytes: bytes, filename: str, language: str
+) -> list[Symbol]:
+    """A Ruby class's constants, class variables and `attr_*` properties (#785).
+
+    Three member forms, all of them absent before this: `LIMIT = 3`,
+    `@@count = 0` and `attr_accessor :view`. RUBY_SPEC declares only `method`,
+    `singleton_method`, `class` and `module`, so a Ruby class reported its
+    methods and nothing else.
+
+    ⚠⚠ **`constant` is the LHS NODE TYPE, not a naming convention.** Ruby's
+    grammar has a `constant` node and it is what `LIMIT` parses as, so this
+    asks the parser rather than testing whether a name is SCREAMING_CASE --
+    which would be a rule about style reproducing a rule the grammar already
+    states.
+
+    ⚠ `attr_accessor` generates a reader and a writer, so `property` is what it
+    is; `attr_reader` and `attr_writer` generate one each and are the same kind
+    of thing. One call may name several, and each is a member.
+    """
+    if not _ruby_class_body(node):
+        return []
+    source = ByteSlicedSource(source_bytes)
+
+    if node.type == "assignment":
+        target = node.child_by_field_name("left")
+        if target is None:
+            return []
+        name = source[target.start_byte:target.end_byte]
+        if target.type == "constant":
+            return [_field_symbol(
+                name, node, source_bytes, filename, language, kind="constant"
+            )]
+        if target.type == "class_variable":
+            return [_field_symbol(name, node, source_bytes, filename, language)]
+        # ⚠ An instance variable (`@x = 1`) at class-body scope is state of the
+        # CLASS OBJECT, not of an instance, and is rare enough that indexing it
+        # would be a guess about intent. Everything else here is a local.
+        return []
+
+    # `call`. ⚠⚠ The node type is also how `include Comparable`, `private` and
+    # every DSL macro in every Rails model is spelled, so the called NAME is
+    # the discriminator: reading the node type alone would index half a class
+    # body as members.
+    #
+    # ⚠⚠ **And the name is not enough on its own.** `foo.attr_accessor
+    # :sneaky` in a class body declares nothing about this class, and reading
+    # only the `method` field published `Audit.sneaky` as an owned property
+    # appearing nowhere in the source. That is fabrication, and this family
+    # fails toward ABSENCE. Found in review.
+    #
+    # ⚠⚠ **The rule is that we CANNOT RESOLVE a receiver, not that there is
+    # never one** -- the first draft of this comment claimed the latter and it
+    # is false. `self.attr_accessor :x` and `Audit.attr_accessor :x` in a class
+    # body are valid Ruby and really do declare accessors. A receiver is an
+    # arbitrary expression, this parser does not evaluate expressions, and an
+    # unresolved receiver is UNKNOWN -- which this family renders as absence.
+    # So those two are false NEGATIVES, deliberately, and are pinned as limits
+    # rather than special-cased by spelling. Found in review, twice.
+    if node.child_by_field_name("receiver") is not None:
+        return []
+    method = node.child_by_field_name("method")
+    if method is None:
+        return []
+    if source[method.start_byte:method.end_byte] not in _RUBY_ATTR_CALLS:
+        return []
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        return []
+    out = []
+    for arg in args.children:
+        if arg.type == "simple_symbol":
+            # `:view` -> `view`; the colon is the literal's syntax, not the name.
+            name = source[arg.start_byte:arg.end_byte].lstrip(":")
+        elif arg.type == "string":
+            name = source[arg.start_byte:arg.end_byte].strip("\"'")
+        else:
+            continue
+        if name:
+            out.append(_field_symbol(
+                name, node, source_bytes, filename, language, kind="property"
+            ))
+    return out
+
+
+def _dart_member_kind(node) -> str:
+    """`constant` for a Dart `const` member, `field` for everything else.
+
+    ⚠⚠ **`final` is NOT `constant`, and this is the shared rule deciding it
+    again** (`_STATE_KIND_REFINERS`): a member is `constant` only where the
+    language's own dedicated constant keyword is used. Dart HAS `const`, so
+    `final int limit = 3` is a `field` -- the C# `static readonly` ruling. Apex
+    and Groovy went the other way on `static final` for the opposite reason:
+    neither has a `const` to reserve the word for.
+    """
+    return (
+        "constant"
+        if any(c.type == "const_builtin" for c in node.children)
+        else "field"
+    )
+
+
+def _extract_dart_members(
+    node, source_bytes: bytes, filename: str, language: str
+) -> list[Symbol]:
+    """Every member a Dart `declaration` binds (#775).
+
+    DART_SPEC declared `function_signature`, `method_signature` and the type
+    forms; a data member is a `declaration` and was in no channel, so a Dart
+    class reported its methods and its getters and none of its state.
+
+    ⚠⚠ **Two declarator spellings, and reading one indexes half the class.**
+    An ordinary member is `initialized_identifier_list > initialized_identifier
+    > identifier`; a `static const` / `static final` member is
+    `static_final_declaration_list > static_final_declaration > identifier`.
+    They are different node types for the same job, so both are read.
+
+    ⚠ `int a = 1, b = 2;` is two members. One list holds N declarators.
+
+    ⚠ Scoped by `_dart_member_has_an_owner`, which the `_extract_fields`
+    dispatcher asks before calling this: a member must sit in a body whose
+    OWNER is one of DART_SPEC's containers, so a `declaration` in an
+    `extension type` body has nothing to belong to and is not adopted.
+    """
+    source = ByteSlicedSource(source_bytes)
+    kind = _dart_member_kind(node)
+    names = []
+    for child in node.children:
+        if child.type not in (
+            "initialized_identifier_list", "static_final_declaration_list"
+        ):
+            continue
+        for declarator in child.children:
+            if declarator.type not in (
+                "initialized_identifier", "static_final_declaration"
+            ):
+                continue
+            name_node = next(
+                (c for c in declarator.children if c.type == "identifier"), None
+            )
+            if name_node is not None:
+                names.append(source[name_node.start_byte:name_node.end_byte])
+    return [
+        _field_symbol(name, node, source_bytes, filename, language, kind=kind)
+        for name in names
     ]
 
 

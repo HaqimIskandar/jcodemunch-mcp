@@ -2,6 +2,87 @@
 
 ## [Unreleased]
 
+### Fixed - a Dart, GDScript or Ruby class's state is indexed (#775, #777, #785)
+
+A Dart class reported its methods and its getters and none of its state:
+`final int limit`, `int tally` and `static const int CAP` were all absent. A
+GDScript class body's `const LIMIT` and `var tally` were absent. A Ruby class's
+`LIMIT = 3`, its `attr_accessor :view` and its `@@count` were absent. Six cells
+of the member-kind audit, three languages' worth of class members that
+`search_symbols` could not find and that `get_file_outline` counted as nothing.
+
+**This is the fourth mechanism in the family and the first that is purely
+spec-driven.** #788 gave five custom parsers an owner, #774/#776/#779/#782 gave
+four of them the class state they never extracted, and #778 resolved Go's
+receiver. Every language left reaches `_walk_tree` through a `LanguageSpec`, so
+nothing here is a parser reproducing a rule it could have asked for — the
+channels already existed and these three grammars were not wired into them.
+
+⚠⚠ **GDScript's `const` needed no channel at all, and that is the whole
+diagnosis.** `const_statement` was already in `GDSCRIPT_SPEC.constant_patterns`
+and a file-scope `const LIMIT = 3` already indexed. The gap read as "GDScript
+constants are missing" and was really "the gate stops at file scope", so the
+fix is one name in `_CLASS_SCOPED_CONSTANT_LANGUAGES` — the authority that
+question already had — rather than a second extractor answering it again.
+
+⚠⚠ **All three grammars spell a member and a LOCAL with the same node type**,
+so each channel is gated on what encloses the declaration. Ruby is the sharpest
+case: `LIMIT = 3` and `total = 1` are both `assignment`, and `attr_accessor
+:view` and `include Comparable` are both `call`. The node type alone would
+index half a Rails model as members, so a Ruby member must be a direct
+statement of a class or module body, and a `call` must name one of the three
+`attr_*` forms. Reading `attr_accessor` alone would have been fixed for that
+spelling only; `attr_reader` is the commoner of the three in real Ruby.
+
+⚠ **`final` is not `constant` in Dart**, by the same rule that made C#'s
+`static readonly` a field: a member is a constant only where the language's own
+dedicated constant keyword is used, and Dart has `const` to reserve the word
+for. Apex and Groovy went the other way on `static final` because neither has
+one. Ruby's constant is the grammar's own `constant` node on the left of the
+assignment, asked of the parser rather than inferred from SCREAMING_CASE.
+
+⚠ **Two declarator spellings in Dart**, because an ordinary member is an
+`initialized_identifier` and a `static const` member is a
+`static_final_declaration`: different node types for the same job, so reading
+one indexes half a class. `int a = 1, b = 2;` is two members, and one
+`attr_accessor :a, :b, :c` is three.
+
+⚠ **The Dart holder set was measured, not named.** A mixin and an extension are
+containers too, so the obvious set was `class_body`, `extension_body` and
+`mixin_body` — and there is no `mixin_body`, because a `mixin_declaration`
+holds a `class_body`. That third entry would have been inert: a guard written
+against a spelling the grammar does not use.
+
+⚠⚠ **Two guards shipped in the first draft with no witness, and one of them
+fabricated.** `attr_accessor` is always an implicit-self call, and the Ruby
+branch read only the called name — so `foo.attr_accessor :sneaky` in a class
+body published `Audit.sneaky`, an owned property appearing nowhere in the
+source, where the old tree emitted only the class. A missing member is a gap; a
+member that does not exist is a lie told to every consumer downstream, and this
+family fails toward absence. The Dart holder gate had the mirror problem: an
+`extension type` holds a `class_body` exactly as a class does, but
+`extension_type_declaration` is in no spec's `container_node_types`, so its
+member was published with **no owner** — #698's complaint and #788's whole
+subject, one language later. The gate now asks `DART_SPEC.container_node_types`
+rather than keeping a second copy of it.
+
+⚠⚠ **And the tests that claimed to guard the Ruby scope rule did not.** All
+three stayed green when the gate was deleted, because their fixtures are
+excluded by a different mechanism — a lowercase left-hand side is not a
+`constant` node, and `puts` is not an `attr_*` name. They passed for a reason
+unrelated to the rule. The shapes that actually reach the channel and are
+stopped by scope alone — an uppercase assignment, a `@@` variable and an
+`attr_accessor` call, each inside a `def` — are pinned now, and each one goes
+red when the gate is removed. A test asserting a file-scope Ruby constant kept
+its bare name was fully vacuous in the same way: Ruby emits no file-scope
+constant at all, so its loop body never ran.
+
+⚠ **A GDScript top-level `var` is still absent, and it is pinned as a limit.**
+A GDScript file is itself a class, so a file-scope `var` is arguably script
+state — but it is the same `variable_statement` node as a function local, and
+separating them at file scope needs a locality predicate this change does not
+have. Widening without it would publish every local in every script.
+
 ### Fixed - a Go method belongs to its receiver, and a struct's fields are indexed (#778)
 
 `func (a *Audit) RunIt() int` came back as `RunIt` — not qualified by its type,
