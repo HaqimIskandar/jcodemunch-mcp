@@ -12083,14 +12083,39 @@ def _parse_pascal_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                 return child
         return None
 
-    def _walk(node, scope: str = "") -> None:
+    def _member(node, parent: Symbol, name_node, kind: str) -> None:
+        """One member of `parent`, both halves of its identity from `_member_of`."""
+        name = _text(name_node)
+        qualified, owner_id = _member_of(parent, name)
+        symbols.append(Symbol(
+            id=make_symbol_id(filename, qualified, kind),
+            file=filename, name=name, qualified_name=qualified,
+            kind=kind, language="pascal",
+            signature=_text(node).split(";")[0].strip()[:120],
+            docstring="",
+            parent=owner_id,
+            line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            byte_offset=node.start_byte,
+            byte_length=node.end_byte - node.start_byte,
+            content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+        ))
+
+    # ⚠⚠ #812: the walk threads the owner SYMBOL, not a scope string, and a
+    # class body is READ: `declField` (N names) and `class var` are `field`,
+    # a class-scoped `const` is `constant` (it was emitted BARE before, so
+    # that id moves; named under PARSER_GENERATION), every `declProc` in the
+    # body is `method`, `declProp` is `property`. A record is walked the same
+    # way. The implementation-section `TAudit.RunIt` (`genericDot`) is still
+    # unread: its name is not a direct identifier child.
+    def _walk(node, parent: Optional[Symbol] = None) -> None:
         if node.type == "defProc":
             decl = _first_child_of_type(node, "declProc")
             if decl:
                 ident = _first_child_of_type(decl, "identifier")
                 if ident:
                     name = _text(ident)
-                    qualified = f"{scope}.{name}" if scope else name
+                    qualified, owner_id = _member_of(parent, name)
                     sig = _text(decl).split(";")[0].strip()
                     symbols.append(Symbol(
                         id=make_symbol_id(filename, qualified, "function"),
@@ -12098,6 +12123,7 @@ def _parse_pascal_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                         kind="function", language="pascal",
                         signature=sig[:120],
                         docstring="",
+                        parent=owner_id,
                         line=node.start_point[0] + 1,
                         end_line=node.end_point[0] + 1,
                         byte_offset=node.start_byte,
@@ -12110,27 +12136,31 @@ def _parse_pascal_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
             if ident:
                 name = _text(ident)
                 kind = "class" if cls and cls.type == "declClass" else "type"
-                qualified = f"{scope}.{name}" if scope else name
-                symbols.append(Symbol(
+                qualified, owner_id = _member_of(parent, name)
+                container = Symbol(
                     id=make_symbol_id(filename, qualified, kind),
                     file=filename, name=name, qualified_name=qualified,
                     kind=kind, language="pascal",
                     signature=f"type {name}",
                     docstring="",
+                    parent=owner_id,
                     line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                     byte_offset=node.start_byte,
                     byte_length=node.end_byte - node.start_byte,
                     content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
-                ))
-                # Walk inside class declarations for methods
+                )
+                symbols.append(container)
                 if cls:
                     for child in cls.children:
-                        _walk(child, qualified)
+                        _walk(child, container)
                     return
         elif node.type == "declConst":
             ident = _first_child_of_type(node, "identifier")
             if ident:
+                if parent is not None:
+                    _member(node, parent, ident, "constant")
+                    return
                 name = _text(ident)
                 symbols.append(Symbol(
                     id=make_symbol_id(filename, name, "constant"),
@@ -12141,9 +12171,29 @@ def _parse_pascal_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                     line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                 ))
+        elif parent is not None and node.type == "declField":
+            for child in node.children:
+                if child.type == "identifier":
+                    _member(node, parent, child, "field")
+            return
+        elif parent is not None and node.type == "declVar":
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                _member(node, parent, ident, "field")
+            return
+        elif parent is not None and node.type == "declProc":
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                _member(node, parent, ident, "method")
+            return
+        elif parent is not None and node.type == "declProp":
+            ident = _first_child_of_type(node, "identifier")
+            if ident:
+                _member(node, parent, ident, "property")
+            return
 
         for child in node.children:
-            _walk(child, scope)
+            _walk(child, parent)
 
     _walk(tree.root_node)
     return symbols
@@ -13391,7 +13441,7 @@ def _parse_fsharp_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                     name = _text(ident)
                     qualified = f"{scope}.{name}" if scope else name
                     sig_text = _text(node).split("\n")[0].strip()[:120]
-                    symbols.append(Symbol(
+                    container = Symbol(
                         id=make_symbol_id(filename, qualified, "type"),
                         file=filename, name=name, qualified_name=qualified,
                         kind="type", language="fsharp",
@@ -13402,11 +13452,95 @@ def _parse_fsharp_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                         byte_offset=node.start_byte,
                         byte_length=node.end_byte - node.start_byte,
                         content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
-                    ))
+                    )
+                    symbols.append(container)
+                    _walk_members(td, container)
             return
 
         for child in node.children:
             _walk(child, scope)
+
+    def _member(node, owner: Symbol, name: str, kind: str) -> None:
+        qualified, owner_id = _member_of(owner, name)
+        symbols.append(Symbol(
+            id=make_symbol_id(filename, qualified, kind),
+            file=filename, name=name, qualified_name=qualified,
+            kind=kind, language="fsharp",
+            signature=_text(node).split("\n")[0].strip()[:120],
+            docstring="",
+            parent=owner_id,
+            line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            byte_offset=node.start_byte,
+            byte_length=node.end_byte - node.start_byte,
+            content_hash=compute_content_hash(source_bytes[node.start_byte:node.end_byte]),
+        ))
+
+    # ⚠⚠ #812: a type's body is READ, each member owned through `_member_of`.
+    # `let mutable` is `field`, `let` is `constant`, a `let`-bound function is
+    # `method` (a private method, which is how it compiles); `member x.M(args)`
+    # is `method`; `with get`, `member val` and an argument-less `member` or
+    # `static member` are `property` (a member with no parameter list IS a
+    # property in F#). The `mutable` marker is an unnamed token, so it is read
+    # by node type, never by text.
+    def _walk_members(td, owner: Symbol) -> None:
+        for tee in td.children:
+            if tee.type != "type_extension_elements":
+                continue
+            for el in tee.children:
+                if el.type == "member_defn":
+                    # `static let [mutable] x = ...` sits under member_defn >
+                    # value_declaration > function_or_value_defn (review of
+                    # #812); static state is the #809/#811 shape, same kinds.
+                    vd = _first_child_of_type(el, "value_declaration")
+                    if vd is not None:
+                        el = _first_child_of_type(vd, "function_or_value_defn") or el
+                if el.type == "function_or_value_defn":
+                    fdl = _first_child_of_type(el, "function_declaration_left")
+                    vdl = _first_child_of_type(el, "value_declaration_left")
+                    if fdl is not None:
+                        ident = _first_child_of_type(fdl, "identifier")
+                        if ident is not None:
+                            _member(el, owner, _text(ident), "method")
+                    elif vdl is not None:
+                        ip = _first_child_of_type(vdl, "identifier_pattern")
+                        if ip is not None:
+                            mutable = any(c.type == "mutable" for c in vdl.children)
+                            _member(el, owner, _text(ip), "field" if mutable else "constant")
+                elif el.type == "member_defn":
+                    mpd = _first_child_of_type(el, "method_or_prop_defn")
+                    poi = _first_child_of_type(mpd if mpd is not None else el, "property_or_ident")
+                    if poi is None:
+                        continue
+                    idents = [c for c in poi.children if c.type == "identifier"]
+                    if not idents:
+                        continue
+                    name = _text(idents[-1])
+                    if mpd is not None and name == "val":
+                        # `static member val Total = 0`: the grammar takes `val` as
+                        # the name and binds `Total` as `args` (review of #812;
+                        # the trailing `with get, set` spills to file level and
+                        # every later member is lost, filed). Name the property.
+                        # The LAST pattern: an accessibility modifier between
+                        # `val` and the name (`val private Count`) arrives as a
+                        # pattern of its own, ahead of the name (review, round 3).
+                        # A type annotation wraps the name in `typed_pattern`
+                        # (round 4), so the last pattern is read through it.
+                        pats = []
+                        for c in mpd.children:
+                            if c.type == "identifier_pattern":
+                                pats.append(c)
+                            elif c.type == "typed_pattern":
+                                pats.extend(g for g in c.children if g.type == "identifier_pattern")
+                        if not pats:
+                            continue
+                        _member(el, owner, _text(pats[-1]), "property")
+                        continue
+                    if mpd is not None and mpd.child_by_field_name("args") is not None:
+                        kind = "method"
+                    else:
+                        kind = "property"
+                    _member(el, owner, name, kind)
 
     _walk(tree.root_node)
     return symbols
@@ -13621,6 +13755,57 @@ def _parse_nim_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                 return child
         return None
 
+    # ⚠⚠ #812: an `object`'s fields are READ and owned through `_member_of`:
+    # every `symbol_declaration` under the object's `field_declaration`s and
+    # a `case` variant's discriminator, in every branch, behind `ref`/`ptr`,
+    # with the export marker `*` stripped (the name sits under
+    # `exported_symbol`). A `proc` taking the type as its first parameter
+    # stays a module-level `function`: UFCS is call syntax, not membership.
+    def _object_fields(type_decl, owner: Symbol) -> None:
+        obj = _first_child_of_type(type_decl, "object_declaration")
+        if obj is None:
+            # `ref object` is `ref_type`; `ptr object` is `pointer_type` (review
+            # of #812 caught `ptr_type`, a spelling the grammar never emits).
+            wrapper = _first_child_of_type(type_decl, "ref_type", "pointer_type")
+            if wrapper is not None:
+                obj = _first_child_of_type(wrapper, "object_declaration")
+        if obj is None:
+            return
+
+        def _field(decl, ident) -> None:
+            name = _text(ident)
+            qualified, owner_id = _member_of(owner, name)
+            symbols.append(Symbol(
+                id=make_symbol_id(filename, qualified, "field"),
+                file=filename, name=name, qualified_name=qualified,
+                kind="field", language="nim",
+                signature=_text(decl).split("\n")[0].strip()[:120],
+                docstring="",
+                parent=owner_id,
+                line=decl.start_point[0] + 1,
+                end_line=decl.end_point[0] + 1,
+                byte_offset=decl.start_byte,
+                byte_length=decl.end_byte - decl.start_byte,
+                content_hash=compute_content_hash(source_bytes[decl.start_byte:decl.end_byte]),
+            ))
+
+        def _visit(n) -> None:
+            if n.type in ("field_declaration", "variant_discriminator_declaration"):
+                sdl = _first_child_of_type(n, "symbol_declaration_list")
+                for sd in (sdl.children if sdl is not None else ()):
+                    if sd.type != "symbol_declaration":
+                        continue
+                    ident = sd.child_by_field_name("name")
+                    if ident is not None and ident.type == "exported_symbol":
+                        ident = _first_child_of_type(ident, "identifier")
+                    if ident is not None:
+                        _field(n, ident)
+                return
+            for c in n.children:
+                _visit(c)
+
+        _visit(obj)
+
     def _walk(node, scope: str = ""):
         if node.type in ("proc_declaration", "func_declaration",
                          "template_declaration", "macro_declaration",
@@ -13673,7 +13858,7 @@ def _parse_nim_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                         name = _text(tsd).strip().rstrip("*")
                         qualified = f"{scope}.{name}" if scope else name
                         sig_text = _text(child).split("\n")[0].strip()[:120]
-                        symbols.append(Symbol(
+                        container = Symbol(
                             id=make_symbol_id(filename, qualified, "type"),
                             file=filename, name=name, qualified_name=qualified,
                             kind="type", language="nim",
@@ -13684,7 +13869,9 @@ def _parse_nim_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
                             byte_offset=child.start_byte,
                             byte_length=child.end_byte - child.start_byte,
                             content_hash=compute_content_hash(source_bytes[child.start_byte:child.end_byte]),
-                        ))
+                        )
+                        symbols.append(container)
+                        _object_fields(child, container)
             return
 
         elif node.type in ("var_section", "let_section", "const_section"):
