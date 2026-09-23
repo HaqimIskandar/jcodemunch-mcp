@@ -655,15 +655,25 @@ def _walk_tree(
     if node.type in spec.symbol_node_types and not _is_bodiless_type_specifier(node):
         # C++ declarations include non-function declarations. Filter those out.
         if not (is_cpp and node.type in {"declaration", "field_declaration"} and not _is_cpp_function_declaration(node)):
+            # #833 review: a block-scope PROTOTYPE (`void f() { void inner(int); }`)
+            # declares a namespace-scope function, so it stays at file scope
+            # with no owner, exactly as `main` answered it; the function body
+            # owns every DEFINITION in it, never this.
+            block_scope_prototype = (
+                is_cpp
+                and node.type == "declaration"
+                and parent_symbol is not None
+                and parent_symbol.kind in ("function", "method")
+            )
             symbol = _extract_symbol(
                 node,
                 spec,
                 source_bytes,
                 filename,
                 language,
-                parent_symbol,
+                None if block_scope_prototype else parent_symbol,
                 local_scope_parts,
-                class_scope_depth,
+                0 if block_scope_prototype else class_scope_depth,
                 parent_is_container,
             )
             if symbol:
@@ -691,7 +701,20 @@ def _walk_tree(
                 if is_cpp:
                     # `typedef struct { int x; } Point;` -- the struct has no
                     # name of its own, so the typedef's is the owner (#755).
-                    if _is_cpp_type_container(node) or _cpp_typedef_of_anonymous_type(node):
+                    # ⚠⚠ #833/#798: a FUNCTION BODY is a scope too. Without
+                    # this, a type declared inside a free function was
+                    # published at file scope with no owner (C qualified the
+                    # same bytes under the function), and inside a member
+                    # function it was qualified under the CLASS (`K.L`) as if
+                    # `K` declared it. The body counts as one class-scope
+                    # level for `kind`: the only function DEFINITION a C++
+                    # function body can hold is a method of a local class (a
+                    # block-scope prototype is exempted above).
+                    if (
+                        _is_cpp_type_container(node)
+                        or _cpp_typedef_of_anonymous_type(node)
+                        or node.type == "function_definition"
+                    ):
                         next_parent = symbol
                         next_class_scope_depth = class_scope_depth + 1
                 else:
