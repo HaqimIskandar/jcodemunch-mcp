@@ -654,13 +654,20 @@ def _walk_tree(
     # `ARDUINO_SPEC` (three copies of one grammar shape) all inherit the rule.
     if node.type in spec.symbol_node_types and not _is_bodiless_type_specifier(node):
         # C++ declarations include non-function declarations. Filter those out.
-        if not (is_cpp and node.type in {"declaration", "field_declaration"} and not _is_cpp_function_declaration(node)):
+        # #835: C reads the same `declaration` row as C++ now, through the
+        # same gate, so a third copy of the prototype filter cannot drift.
+        if not (
+            (is_cpp or language == "c")
+            and node.type in {"declaration", "field_declaration"}
+            and not _is_c_family_function_declaration(node, language)
+        ):
             # #833 review: a block-scope PROTOTYPE (`void f() { void inner(int); }`)
             # declares a namespace-scope function, so it stays at file scope
             # with no owner, exactly as `main` answered it; the function body
-            # owns every DEFINITION in it, never this.
+            # owns every DEFINITION in it, never this. C's block-scope
+            # prototype declares an external function the same way (#835).
             block_scope_prototype = (
-                is_cpp
+                (is_cpp or language == "c")
                 and node.type == "declaration"
                 and parent_symbol is not None
                 and parent_symbol.kind in ("function", "method")
@@ -926,6 +933,11 @@ def _walk_tree(
             calls,
             next_is_container,
         )
+
+    # #835: at the ROOT, once the whole tree is walked, so every caller of
+    # this walk (the `.c` path and the `.h`-as-C fallback alike) inherits it.
+    if language == "c" and node.parent is None:
+        symbols[:] = _drop_redundant_c_prototypes(symbols, source_bytes)
 
 
 # Class field declarations in the JS grammar (`field_definition`) and the
@@ -2270,6 +2282,55 @@ def _is_bodiless_type_specifier(node) -> bool:
     because it carries the signature a caller reads.
     """
     return node.type in _C_FAMILY_TYPE_SPECIFIERS and node.child_by_field_name("body") is None
+
+
+def _drop_redundant_c_prototypes(symbols: list[Symbol], source_bytes: bytes) -> list[Symbol]:
+    """A C prototype is a mention: one symbol per declared function (#835).
+
+    A prototype whose definition is in the same file yields nothing (the
+    definition is the symbol), and a second prototype of a name already
+    declared yields nothing (the first is the symbol, and its id does not
+    move when a redundant re-declaration is added: review round 1). C has
+    no overloading, so name equality is exact. A prototype is the
+    `function` whose bytes end in `;` (a `declaration`); a definition's end
+    in `}`. ⚠ C only: in C++ `int f(int); int f(double) {}` are two
+    overloads under one qualified name, and a by-name drop would lose a real
+    declaration. ⚠ Applied at the ROOT of `_walk_tree`, not at a caller, so
+    the `.h`-as-C fallback in `_parse_cpp_symbols` inherits it (review
+    round 1 found a header publishing two `f` where a `.c` published one).
+    """
+    def _text(s: Symbol) -> bytes:
+        return source_bytes[s.byte_offset:s.byte_offset + s.byte_length].rstrip()
+
+    defined = {s.qualified_name for s in symbols if s.kind == "function" and _text(s).endswith(b"}")}
+    kept: list[Symbol] = []
+    declared: set[str] = set()
+    for s in symbols:
+        if s.kind == "function" and _text(s).endswith(b";"):
+            if s.qualified_name in defined or s.qualified_name in declared:
+                continue
+            declared.add(s.qualified_name)
+        kept.append(s)
+    return kept
+
+
+def _is_c_family_function_declaration(node, language: str) -> bool:
+    """The prototype gate for all three spec copies (#835).
+
+    C asks PER DECLARATOR (`_cpp_declarator_is_function`): the declarator that
+    binds the name must be a `function_declarator`, so `struct S *make(void);`
+    is a prototype and `int (*fp)(int);` is a variable. ⚠ C++ keeps its
+    older SUBTREE rule for a file-scope `declaration` (any function
+    declarator anywhere under it), which is why `int (*fp)(int);` is a
+    `function` there (#850); changing that moves C++ ids and is that
+    issue's, not this one's.
+    """
+    if language == "c":
+        if node.type != "declaration":
+            return True
+        declarator = node.child_by_field_name("declarator")
+        return declarator is not None and _cpp_declarator_is_function(declarator)
+    return _is_cpp_function_declaration(node)
 
 
 def _is_cpp_function_declaration(node) -> bool:
