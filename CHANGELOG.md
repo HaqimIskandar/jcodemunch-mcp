@@ -2,6 +2,72 @@
 
 ## [Unreleased]
 
+### Fixed - `get_dead_code_v2` reported a called function as having no caller when its language records no calls and another language in the repository does (LEDGER L-155)
+
+`get_dead_code_v2` has two sources of evidence that a function is called: the call references a
+parser records, and the file's text. It chose between them with one question asked of the whole
+repository: does the index hold any call reference? With none, it read files as text. With any,
+it read call references, plus the text at module level only.
+
+Most languages here record no call reference. The parser keeps a table of call nodes
+(`_CALL_NODE_TYPES`) for thirteen languages, and every other language records none by
+construction. Two of the thirteen, PHP and Dart, recorded none either on the shapes tried. So in
+a repository that also holds Python or Ruby, a function in any of those languages that is called
+only from inside another function had no evidence on either path and was reported with
+`no_callers`. Measured on Clojure, Elixir, Erlang, PHP, C, Bash and Dart (`evidence/red.txt`).
+This is #409's flip one level down: there one call reference anywhere moved a repository onto a
+path that could not see module-level calls. Found in the review of L-152.
+
+The choice is now made per file. A file is read as text when none of its symbols' languages has
+a call reference anywhere in the index. The index is asked, not the table, which names PHP and
+Dart. A file that holds symbols of two languages (a template with a script block) is read as
+text only when neither records a call.
+
+The call-graph-only mode (the one an index with no import edge takes) had the same defect in a
+second form: it knew no text at all, so a file of such a language had every function reported.
+It now reads a function's own file by the same per-file rule, whatever else the repository
+holds. A Clojure file indexed alone, beside Python that calls nothing and beside Python that
+calls give one answer there.
+
+When a file's text was read for a caller the response says so in a new key,
+`callers_read_as_text: {"files": n, "languages": [...]}`, on all three paths, the old text
+fallback included. Text is weaker evidence than a call reference: a mention in a comment counts
+as a caller. `files` counts the files whose text was read, not the files eligible: a
+`pyproject.toml` holds symbols and records no call, and nothing is asked of it. The key is
+absent when no file was read that way, and it carries a count and language names, never the
+file list. It does not cover the module-level sweep, which reads the text outside every symbol
+on any repository with call references and is not disclosed.
+
+Measured through the tool, 1.108.342's code plus L-152's fix against this
+(`evidence/measure_l155.txt`): on this repository's `src/` the same 451 functions carry
+`no_callers` before and after, and on `benchmarks/` the same 138; neither response carries the
+key. On `tests/fixtures`, 160 before and 140 after; 20 are no longer reported and none is newly
+reported, with 17 files read as text. Thirteen reintroduced defects each fail the tests
+(`evidence/mutants.txt`).
+
+What this does not fix (`evidence/limits_l155.txt`, each still reported after the fix):
+
+- A name that ends in `?` or `!` is still not found by the text rule (L-154; measured on
+  Elixir's `valid?`).
+- A function called only from ANOTHER file is found only where the import graph holds an edge
+  from the calling file to the function's file. PHP's `require` gives one. A Clojure `:require`,
+  an Elixir `alias`, and two C files that include one header do not (L-157).
+- In call-graph-only mode there is no import graph, so only a function's own file is read
+  (L-157).
+- The choice is per language. A language that records some calls gets no text reading for the
+  call shapes its parser misses: a Go method called through a receiver, `t.UsedMethod()`, is
+  reported, before and after (L-159).
+
+A language that can record calls is read as text too when the repository's files of it hold no
+call between functions. That only ever finds a caller a call reference would not; it never
+removes one.
+
+One consequence in call-graph-only mode, measured by the reviewer and recorded as L-160: a
+Python file holding `def a()` and a module-level `a()` no longer has `a` reported when indexed
+alone, and still has it reported beside another Python file that records a call. Before, it
+was reported both times. That mode has no module-level sweep, so the answer for a language
+that records calls now depends on whether any file of it does.
+
 ### Fixed - `get_dead_code_v2`'s module-level sweep no longer searches a file's whole residue once per function (LEDGER L-152)
 
 On an index that holds call references, `get_dead_code_v2` sweeps what those references cannot
