@@ -44,6 +44,101 @@ def _word_match(content: str, name: str) -> bool:
     return bool(re.search(r"\b" + re.escape(name) + r"\b", content))
 
 
+_WORD_RE = re.compile(r"\w+")
+# Every character ``str.splitlines`` cuts on. A name holding one can match
+# across two lines of the text, which a per-line index cannot see.
+_LINE_SEP_RE = re.compile("[\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
+class FileWords:
+    """Which lines of one file name what, from ONE pass over its text.
+
+    For a caller that asks ``_word_match`` about many names against the same
+    file (LEDGER L-150: one question per function, each a whole-file search).
+    ``lines_naming(name)`` is the ascending list of line indices where
+    ``_word_match(line, name)`` holds. Every line separator is a non-word
+    character, so for a name that holds none that is the same answer a search
+    over any subset of the lines joined by ``"\\n"`` gives.
+
+    ⚠ **Precondition: the name holds no line separator.** ``spans_lines(name)``
+    says whether it does; such a name can match across two lines, so its
+    caller must search the text itself. ``lines_naming`` raises on one
+    rather than answer "no line".
+
+    A name made only of word characters is a dictionary read. Any other name
+    (``add/2``, ``ns::f``, ``$x``, ``save!``) is searched only on the lines
+    that hold its rarest word, because each ``\\w+`` run inside a matched name
+    is a whole word of the line. A name with no word character (an operator)
+    is searched on the lines that contain it. Answers are kept per name, so
+    two hundred overloads of one name cost one lookup.
+
+    ⚠ Holds the file's lines and one list entry per distinct word per line:
+    several times the text. Build it for a file asked about more than once.
+    """
+
+    __slots__ = ("_lines", "_by_word", "_by_name")
+
+    def __init__(self, content: str) -> None:
+        self._lines = content.splitlines()
+        by_word: dict[str, list[int]] = {}
+        for i, line in enumerate(self._lines):
+            for word in set(_WORD_RE.findall(line)):
+                by_word.setdefault(word, []).append(i)
+        self._by_word = by_word
+        self._by_name: dict[str, list[int]] = {}
+
+    @property
+    def line_count(self) -> int:
+        return len(self._lines)
+
+    def lines_naming(self, name: str) -> list[int]:
+        """Ascending indices of the lines that name *name* as a word."""
+        found = self._by_name.get(name)
+        if found is not None:
+            return found
+        if _LINE_SEP_RE.search(name):
+            raise ValueError("a name holding a line separator cannot be answered per line")
+        words = _WORD_RE.findall(name)
+        if len(words) == 1 and words[0] == name:
+            found = self._by_word.get(name, [])
+        elif words:
+            rarest = min((self._by_word.get(w, []) for w in words), key=len)
+            found = [i for i in rarest if _word_match(self._lines[i], name)]
+        else:
+            found = [
+                i for i, line in enumerate(self._lines)
+                if name in line and _word_match(line, name)
+            ]
+        self._by_name[name] = found
+        return found
+
+    @staticmethod
+    def spans_lines(name: str) -> bool:
+        """True if *name* holds a line separator and so cannot be asked here."""
+        return _LINE_SEP_RE.search(name) is not None
+
+    def names(self, name: str) -> bool:
+        """True if any line names *name*."""
+        return bool(self.lines_naming(name))
+
+    def names_outside(self, name: str, start: int, end: int) -> bool:
+        """True if a line outside ``[start, end)`` names *name*.
+
+        The lines kept are those of ``lines[:start] + lines[end:]``, read the
+        way a slice reads them: an ``end`` at or before ``start`` removes
+        nothing, and a negative bound counts from the end of the file.
+        """
+        found = self.lines_naming(name)
+        if not found:
+            return False
+        count = len(self._lines)
+        if start < 0:
+            start = max(0, count + start)
+        if end < 0:
+            end = max(0, count + end)
+        return found[0] < start or found[-1] >= end
+
+
 def _symbol_body(file_lines: list[str], sym: dict) -> str:
     """Slice *file_lines* to the lines covered by *sym* (1-indexed)."""
     line = sym.get("line", 0)
