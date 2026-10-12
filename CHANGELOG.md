@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+### Fixed - a Rust function called only inside a macro invocation was reported as having no caller (LEDGER L-164)
+
+The Rust grammar does not parse a macro's arguments. `assert_eq!(e(x), seq([y]))` reaches the
+parser as a macro name and a tree of tokens, and the parser recorded a call only for a parsed
+call expression. So a function called only inside `assert_eq!`, `assert!`, `vec!`, `println!`
+or a test macro had no caller on record, and `get_dead_code_v2` reported it with `no_callers`.
+Rust tests are written almost entirely inside such macros, so a test helper was the usual
+victim. Until 1.108.346 a local variable that happened to share the function's name had been
+recorded as a call and stood in for some of them; that release stopped recording receivers and
+reported them. Found fixing L-159.
+
+The parser now reads the tokens of a macro invocation: a name directly followed by a
+parenthesised group is a call of that name. That one shape is how `f(x)`, `t.m(x)` and
+`a::b::f(x)` all end, in `(...)`, `[...]` and `{...}` macros alike, nested or not; a turbofish
+(`f::<T>(x)`) is stepped over. A contextual keyword counts as a name, since a function may
+carry it (`Foo::default()`, `a.union(&b)`, `gen(3)`). Not read as calls: a reserved word before
+a group (`in (0..n)`), a name being declared (`fn name(x)`, `struct Pair(u8, u8)`), a lifetime
+or a label, the closure traits (`Fn(u8) -> u8`), the next macro's own name, and an attribute
+written in the macro's body (`#[cfg(not(test))]`). An attribute outside a macro is not a macro
+invocation and is never read. The body of each `macro_rules!` arm is read the same way, since a
+test that defines a local macro calls its helper only there; the arm's pattern is not.
+
+Measured on ripgrep, a shallow clone read and parsed only (`evidence/measure_dead_l164.txt`,
+with its commit). Through `get_dead_code_v2`, 849 distinct functions carried `no_callers`
+before and 810 after: thirty-nine are no longer reported and none is newly reported.
+`tests/fixtures` did not move. Of ripgrep's 2991 Rust functions, 445 gained a recorded call
+and none lost one; parsing its 110 Rust files records 9487 call references where it recorded
+8469, in 1.183 s against 1.119 s, best of three.
+
+Each token is read once, starting from the invocation. Two earlier versions of this fix did
+not, and the review measured both. The first walked back from each group to look for a
+turbofish, which cost N times N on a macro of N comparisons. The second made every nested
+group its own call node and asked each for its ancestors, which cost depth times groups. Each
+ran a file past the parse budget that `main` parses without trouble, and a file past the
+budget is skipped whole. On those two shapes now: 16000 comparisons parse in 0.321 s against
+0.250 s on `main`, and 64000 nested groups take 0.71 s to 0.78 s at depths from 10 to 640
+against 0.50 s to 0.54 s. A test doubles each shape and counts the loop's steps. The first
+version also took a name only from an `identifier` token, so `default`, `union` and `gen` were
+never recorded, and it read attribute arguments as calls. The third did not read a
+`macro_rules!` body, which left ripgrep's live `sgramq` reported. All were the reviewer's
+measurements.
+
+What this does not do:
+
+- **Tokens cannot tell a call from a pattern.** `matches!(x, Wrapped(y))` records `Wrapped`,
+  `Some(y)` records `Some`, and an enum variant with a field declared inside a macro records
+  its name. `cfg!(any(unix))` records `any`. Toward not reporting.
+- **What a macro expands to is not read**, only what is written in an invocation or in a
+  `macro_rules!` body. `$name($arg)` in such a body records nothing.
+- **`cmd` in ripgrep's `tests/util.rs` is still reported.** The ledger row named it with two
+  others. Its calls are recorded now, but they are in another file, and the tool does not
+  count that call; that is L-165.
+- **The order of a function's recorded calls can change**, where a name is now first seen
+  inside a macro: 19 of ripgrep's functions.
+- **An existing index is re-parsed once**: `PARSER_GENERATION` moves to 13.
+
+Twenty-six reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
 ## [1.108.346] - 2026-10-12 - a call through a receiver records the method, never the receiver
 
 ### Fixed - a call through a receiver recorded the receiver's name, so the method read as never called (LEDGER L-159)
