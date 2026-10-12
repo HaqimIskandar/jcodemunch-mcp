@@ -399,6 +399,89 @@ LANGUAGES_CALLED_ACROSS_FILES_WITHOUT_AN_IMPORT: frozenset[str] = frozenset(
     {"go", "java", "csharp", "rust", "ruby", "kotlin", "swift", "php"}
 )
 
+#: The names a language gives a constructor, where that name is a fixed word
+#: nothing ever calls: ``T()`` records a call of ``T`` and ``new K()`` a call
+#: of ``K``, so a search for a caller of ``__init__`` or ``constructor`` finds
+#: none however often the class is created (LEDGER L-167).
+#:
+#: ⚠ A language belongs here only when creating a class RECORDS a call of the
+#: class's name. Ruby's ``initialize`` is a fixed word too and is left out:
+#: ``T.new(1)`` records ``new``, so there is no call of ``T`` to count (L-169).
+CONSTRUCTOR_WORDS: dict[str, frozenset[str]] = {
+    "python": frozenset({"__init__", "__new__"}),
+    "javascript": frozenset({"constructor"}),
+    "typescript": frozenset({"constructor"}),
+    "tsx": frozenset({"constructor"}),
+}
+
+def constructors_as_their_classes(symbols, importers: dict[str, list[str]]) -> list[dict]:
+    """Each fixed-word constructor, once per class whose creation runs it.
+
+    A row is the CLASS's symbol (its name, file and lines) carrying the
+    CONSTRUCTOR's id and kind. Asking "does this function have a caller" of
+    such a row asks whether the class is created, by whatever rule the asker
+    applies to a function; an answer of yes is filed under the constructor.
+
+    A class that is created runs the constructor it inherits, and a subclass's
+    own constructor is taken to call up, so a constructor gets a row for its
+    own class and for every descendant. *importers* maps a file to the files
+    that import it (``{}`` when the index has no import graph).
+
+    ⚠⚠ **A subclass is joined to its base by name ONLY in the base's own file
+    or a file that imports it.** These languages must import a class to extend
+    it, so a same-named base anywhere else is another class, and a subclass is
+    never in another language than its imports reach. The first version
+    joined by name across the whole index: it cleared the constructor of an
+    unimported ``Base`` whenever any ``Kid(Base)`` was created, and a name
+    shared by N bases and their subclasses cost N squared rows (review of
+    L-167: 1.47 s to 15.21 s at 800 files).
+    ⚠ A subclass that reaches its base through a re-export is therefore not
+    joined. Toward reporting.
+    ⚠ Bases come from ``get_class_hierarchy._parse_bases``, which reads a bare
+    capitalised name; ``a.Base`` joins nothing (L-169). What follows
+    ``implements`` is cut off first: implementing a class runs no constructor.
+    ⚠ Two classes of one name in one file are both taken as the base, and a
+    subclass constructor that never calls up still counts for its ancestors
+    (JavaScript requires the call; Python does not). Toward not reporting.
+    """
+    from .get_class_hierarchy import _parse_bases  # noqa: PLC0415  (it imports nothing of ours)
+
+    classes_by_id: dict[str, dict] = {}
+    # (base name, file of the subclass) -> the subclasses
+    children: dict[tuple[str, str], list[dict]] = {}
+    for sym in symbols:
+        if sym.get("kind") != "class":
+            continue
+        if (sym.get("language") or "") not in CONSTRUCTOR_WORDS or not sym.get("id") or not sym.get("name"):
+            continue
+        classes_by_id[sym["id"]] = sym
+        extends = (sym.get("signature") or "").split(" implements ", 1)[0]
+        for base in _parse_bases(extends):
+            children.setdefault((base, sym.get("file") or ""), []).append(sym)
+    if not classes_by_id:
+        return []
+    rows: list[dict] = []
+    for sym in symbols:
+        if sym.get("kind") != "method" or not sym.get("id"):
+            continue
+        if sym.get("name") not in CONSTRUCTOR_WORDS.get(sym.get("language") or "", ()):
+            continue
+        own = classes_by_id.get(sym.get("parent") or "")
+        if own is None:
+            continue
+        seen: set[str] = set()
+        pending = [own]
+        while pending:
+            cls = pending.pop()
+            if cls["id"] in seen:
+                continue
+            seen.add(cls["id"])
+            rows.append({**cls, "id": sym["id"], "kind": "method"})
+            cls_file = cls.get("file") or ""
+            for where in (cls_file, *importers.get(cls_file, ())):
+                pending.extend(children.get((cls["name"], where), ()))
+    return rows
+
 def _callers_from_references(
     index: "CodeIndex",
     sym: dict,
