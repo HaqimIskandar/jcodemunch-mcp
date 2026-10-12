@@ -124,7 +124,10 @@ _CALL_NODE_TYPES: dict[str, set[str]] = {
     # `macro_rules!` body are tokens the grammar does not parse
     # (`_record_macro_calls`, LEDGER L-164).
     "rust": {"call_expression", "macro_invocation", "macro_definition"},
-    "java": {"method_invocation", "object_creation_expression"},
+    # `class_declaration`: a constructor's `super(...)` calls the constructor
+    # of the class this one extends, and only the class node names that class
+    # (`_record_super_constructor_calls`, LEDGER L-166).
+    "java": {"method_invocation", "object_creation_expression", "class_declaration"},
     "php": {"function_call_expression", "method_call_expression", "scoped_call_expression"},
     "ruby": {"call", "method_call"},
     "csharp": {"invocation_expression"},
@@ -159,6 +162,7 @@ _CALLEE_MEMBER_FIELD: dict[str, Optional[str]] = {
     "member_binding_expression": "name",     # C#: the `.M` of a?.M
     "conditional_access_expression": None,   # C#: a?.M
     "scoped_type_identifier": None,          # Java: new pkg.Type()
+    "annotated_type": None,                  # Java: extends @Ann Type
 }
 
 #: A node that wraps the callee: the field that holds what it wraps, `None` for
@@ -187,9 +191,11 @@ _CALLEE_CONDITION_FIELD = "condition"
 _RUST_MACRO_INVOCATION = "macro_invocation"
 _RUST_MACRO_DEFINITION = "macro_definition"
 _RUST_MACRO_NODES = frozenset({_RUST_MACRO_INVOCATION, _RUST_MACRO_DEFINITION})
+#: A Java class holds `super(...)` calls; it is not a call, and it has no callee.
+_JAVA_CLASS_DECLARATION = "class_declaration"
 _CALL_NODES_OF_ANY_LANGUAGE = frozenset(
     t for types in _CALL_NODE_TYPES.values() for t in types
-) - _RUST_MACRO_NODES
+) - _RUST_MACRO_NODES - {_JAVA_CLASS_DECLARATION}
 #: A callee nests one level per `.`, `::`, `<>` or `()`; past this it has no name.
 _CALLEE_MAX_DEPTH = 64
 
@@ -422,6 +428,55 @@ def _record_macro_calls(macro, calls: list[tuple[int, str]]) -> None:
     calls.extend(found)
 
 
+def _java_first_named(node):
+    """The first named child that is not a comment. Java's are `line_comment` and `block_comment`."""
+    for child in node.children:
+        parse_budget.checkpoint()
+        if child.is_named and not child.type.endswith("comment"):
+            return child
+    return None
+
+
+def _record_super_constructor_calls(node, source_bytes: bytes, calls: list[tuple[int, str]]) -> None:
+    """Append a Java class's `super(...)` calls to ``calls``, under the superclass's name.
+
+    A Java constructor is named for its class, so ``new Base()`` records
+    ``Base``. A subclass reaches the same constructor with ``super(...)``, an
+    ``explicit_constructor_invocation`` that names nothing: the name is on the
+    class, in ``extends Base``. Without it the constructor of a class that is
+    only ever subclassed had no caller on record (LEDGER L-166).
+
+    Read from the class node DOWN: its direct constructors, and the first
+    statement of each. ⚠ Since JDK 25 statements may come before the call
+    (``Kid(int x) { check(x); super(x); }``); the grammar here parses that
+    ``super`` as an error node, so it records nothing (L-167).
+    ⚠ Never from the call node up. Asking a node for its parent costs the depth
+    of the tree, once per call (L-164).
+    ⚠ ``this(...)`` is left out. It calls a constructor of the enclosing one's
+    own name, and a call of the enclosing function's name is dropped as
+    recursion wherever calls are attributed.
+    A class that extends nothing calls ``Object``'s constructor: nothing to record.
+    """
+    superclass = node.child_by_field_name("superclass")
+    body = node.child_by_field_name("body")
+    if superclass is None or body is None:
+        return
+    name = _extract_call_name(_java_first_named(superclass), source_bytes)
+    if not name:
+        return
+    for member in body.children:
+        parse_budget.checkpoint()
+        if member.type != "constructor_declaration":
+            continue
+        constructor_body = member.child_by_field_name("body")
+        first = _java_first_named(constructor_body) if constructor_body is not None else None
+        if first is None or first.type != "explicit_constructor_invocation":
+            continue
+        called = first.child_by_field_name("constructor")
+        if called is not None and called.type == "super":
+            calls.append((first.start_byte, name))
+
+
 def _record_call(node, source_bytes: bytes, calls: list[tuple[int, str]]) -> None:
     """Append what one call node calls to ``calls``. THE one recorder.
 
@@ -438,6 +493,9 @@ def _record_call(node, source_bytes: bytes, calls: list[tuple[int, str]]) -> Non
     """
     if node.type in _RUST_MACRO_NODES:
         _record_macro_calls(node, calls)
+        return
+    if node.type == _JAVA_CLASS_DECLARATION:
+        _record_super_constructor_calls(node, source_bytes, calls)
         return
     name = _extract_call_name(node, source_bytes)
     if name:
