@@ -31,6 +31,9 @@ from bisect import bisect_right
 from collections import deque
 from typing import TYPE_CHECKING, Optional
 
+# THE word rule lives in a leaf every layer can import; never rebuild it here.
+from ..word_rule import word_pattern
+
 if TYPE_CHECKING:
     from ..storage import IndexStore
     from ..storage.index_store import CodeIndex
@@ -42,7 +45,7 @@ if TYPE_CHECKING:
 
 def _word_match(content: str, name: str) -> bool:
     """Return True if *name* appears as a word token in *content*."""
-    return bool(re.search(r"\b" + re.escape(name) + r"\b", content))
+    return bool(re.search(word_pattern(name), content))
 
 
 def _word_starts(content: str, name: str) -> list[int]:
@@ -51,7 +54,7 @@ def _word_starts(content: str, name: str) -> list[int]:
     Occurrences that overlap an earlier one are not listed; they share a
     character with it, so a caller that maps offsets to lines loses nothing.
     """
-    return [m.start() for m in re.finditer(r"\b" + re.escape(name) + r"\b", content)]
+    return [m.start() for m in re.finditer(word_pattern(name), content)]
 
 
 _WORD_RE = re.compile(r"\w+")
