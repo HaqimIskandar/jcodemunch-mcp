@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+### Fixed - `get_dead_code_v2` reported a function as having no caller when its only caller was in another file the import graph did not join to it (LEDGER L-157)
+
+For a function of a language that records no call reference, `get_dead_code_v2` read text in
+two places: the function's own file, and each file the import graph says imports that file. For
+several of those languages the graph has no edge where it matters. A Clojure `:require`, an
+Elixir `alias`, an Erlang remote call and a Bash `source` produced none when measured. Two C
+files that include one header are each joined to the header and never to each other, which is
+the ordinary C layout. And the call-graph-only mode has no import graph at all. In each case a
+function called only from another file was reported with `no_callers`. Found while fixing
+L-155; the C and Elixir shapes were its reviewer's.
+
+A function in a text-read file that is still without a caller is now asked of every other
+text-read file of a language that holds functions, import edge or not, on all three paths. Data
+files are not asked: a JSON file records no call and holds symbols, and a function named in one
+is not called there. `callers_read_as_text.files` counts the code files read this way too, so
+it rises where such files exist (17 to 20 on `tests/fixtures`); the key does not say which rows
+rest on this weaker evidence.
+
+One line in such a file is not a call: inside an indexed symbol of the same name, the first
+line that names it is that symbol's own declaration. So a C prototype that is indexed, and a
+second definition of `init` in another file, are not callers. The rule covers the indexed
+symbol's own span and nothing around it; the list below says where that falls short.
+
+This is the weakest evidence the tool uses, and it errs toward not reporting. Any other code
+file that names the word counts. Measured, each a function nothing calls that is no longer
+reported (`evidence/limits_l157.txt`):
+
+- a comment in another code file holds its name;
+- a function of the same name elsewhere recurses, or is an Erlang function with a second clause;
+- another Elixir module has an `@spec` for the same name, or another Erlang module lists it in
+  `-export`. Nearly every Erlang module has an export list, so an unexported Erlang function
+  that shares a name with an exported one elsewhere is not reported;
+- another C file forward-declares and defines the same name, or a header declares it twice (one
+  symbol is indexed, so the other line counts);
+- a doc comment above its prototype names it. In a header documented that way every declared
+  function reads as called.
+
+The last three bullets were the reviewer's shapes, and it measured an Erlang `-spec` for the
+same name in another module the same way. On `tests/fixtures`, 140 functions carried
+`no_callers` before and 137 after (`evidence/measure_l157.txt`, at `min_confidence` 0); the
+three that left are `content`, `get` and `bootstrap.bundle.min.js`, each named by an unrelated
+fixture and none of them called. On this repository's `src/` (451) and `benchmarks/` (138)
+nothing moved, and no function is newly reported on any of the three. Fewer `no_callers` rows
+also change how often that signal fires, and the tool gives a signal a vote only inside a band
+of fire rates: the reviewer built a repository where the fix moved the rate into the band and
+three rows appeared at the default `min_confidence` that `main` did not return, two of them
+dead and one live under L-154.
+
+The cost. The answer for a name is worked out once and kept: which files name it beyond their
+own declarations. A name made of word characters starts from one dictionary read; a name of
+several words (`do-thing`) is asked only of the files that hold its rarest adjacent pair of
+words with the same separator. Two earlier versions grew with files times functions: narrowing
+by the rarest single word, when every word was common, and asking per function, when every file
+defined the same callback names (the reviewer timed 1,998 PHP files at 7.3 s on `main` and
+25.8 s on that version). Through the tool on generated Clojure repositories, before and now
+(`evidence/measure_l157.txt`): 2,000, 4,000 and 8,000 functions whose every word is common,
+0.265 s, 0.553 s and 1.178 s against 0.278 s, 0.605 s and 1.294 s; seven shared uncalled names
+in each of 250, 500 and 1,000 files, 0.825 s, 2.029 s and 3.475 s against 0.863 s, 1.727 s and
+3.576 s. Thirteen reintroduced defects each fail the tests (`evidence/mutants.txt`).
+
+Still reported though live (`evidence/limits_l157.txt`):
+
+- A name that ends in `?` or `!` (L-154).
+- A facade of the same name that calls on its declaring line, `(defn start [x] (impl/start x))`
+  written on one line (L-161).
+- A function of a language that DOES record calls, called only from a text-read file: a Python
+  function named in a Clojure file (L-161).
+
 ## [1.108.343] - 2026-10-11 - dead code: a file is read as text wherever its language records no call
 
 ### Fixed - `get_dead_code_v2` reported a called function as having no caller when its language records no calls and another language in the repository does (LEDGER L-155)
