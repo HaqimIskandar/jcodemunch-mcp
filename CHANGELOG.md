@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Fixed - a JavaScript method called through a string key recorded the wrong name (LEDGER L-173)
+
+JavaScript and TypeScript reach a member by a string as well as by a dot: `t["m"]()` calls what
+`t.m()` calls. The grammar gives the first a `subscript_expression`, and the parser resolved
+every subscript to its container, the rule for `fs[0]()` where an element has no name. So the
+call recorded `t`, the method `m` recorded nothing, and a method called only that way read
+`no_callers` in `get_dead_code_v2`: live code reported dead. Found fixing L-159.
+
+A key that is a string holding a name is read as the name now: in single or double quotes, or
+a template with no substitution, behind `?.`, `new`, parentheses or TypeScript's `!`. A name is
+what could follow a dot: letters of any script, digits not first, `_` and `$`. Any other key
+resolves to the container as before: a variable, a number, a string that is not a name
+(`"a-b"`, `"a.b"`, `""`, one with an escape), a template with a substitution, two strings
+joined. Other languages are unchanged, because there a string key reaches an element of a
+container: PHP's `$t["m"]()` is the same node type with no `index` field, and Python's, Go's
+and C#'s subscripts are other node types.
+
+Measured by parsing eight pinned clones with both trees, 1,959 files
+(`evidence/refs_l173.txt`): no symbol's references change. The reviewer's scan of those clones
+found one call through a string key, zod's `this["~validate"](data)`, and `~validate` is not a
+name, so the fix leaves it alone. The effect is on a method whose only call is through a string
+that holds a name, and it is shown by the tests and not by a corpus.
+
+What it does not do:
+
+- **The container is no longer recorded** for a string key, as it never was for a dot. A
+  function held in a table and called as `handlers["save"]()` records `save`, and a project
+  function named `save` anywhere counts as called. Toward not reporting.
+- **A key that is not written as one string is not read**: a string in parentheses
+  (`t[("m")]()`), a constant (`const K = "m"; t[K]()`), a joined string. The container is
+  recorded.
+- **A member read by a string and not called records nothing** (`const f = t["m"]`), as
+  `t.m` records nothing.
+- **A method declared with a string that is not a name is not reached**: zod's
+  `"~validate"(data) {}` is stored with its quotes and its call records nothing, on both trees.
+
+`PARSER_GENERATION` is 18, so an existing index is re-parsed: the fix changes what unchanged
+files record. The rest is LEDGER L-174. Sixteen mutants each fail the tests
+(`evidence/mutants.txt`).
+
 ## [1.108.355] - 2026-10-13 - a Ruby method called by its bare name is recorded as called
 
 ### Fixed - a Ruby method called by its bare name recorded no call (LEDGER L-172)

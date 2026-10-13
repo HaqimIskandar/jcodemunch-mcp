@@ -214,6 +214,32 @@ _CALL_NODES_OF_ANY_LANGUAGE = frozenset(
 #: A callee nests one level per `.`, `::`, `<>` or `()`; past this it has no name.
 _CALLEE_MAX_DEPTH = 64
 
+#: JavaScript and TypeScript reach a member by a string too: `t["m"]()` calls
+#: what `t.m()` calls. The key is a `string`, or a `template_string` with no
+#: substitution, with one part that reads as a name (LEDGER L-173 item 7).
+#: ⚠ Three things keep every other grammar out, and each is needed: the node
+#: is named `subscript_expression` (PHP's is too), its key is in the `index`
+#: field (PHP's has no field; Go's `index_expression` and Java's
+#: `array_access` have one), and the key is one of these two node types (Go's
+#: string literals are neither). In those languages a string key reaches an
+#: element of a container, not a member.
+_JS_KEYED_MEMBER = "subscript_expression"
+_JS_STRING_KEYS = frozenset({"string", "template_string"})
+
+
+def _js_string_key_name(node) -> Optional[str]:
+    """The member a subscript reaches when its key is a string holding a name, or None.
+
+    A name is what could be written after a dot: letters of any script, digits
+    not first, `_` and `$`. A method declared with a string that is not a name
+    (`"~validate"(data) {}`) is not reached by this: LEDGER L-174.
+    """
+    key = node.child_by_field_name("index")
+    if key is None or key.type not in _JS_STRING_KEYS or key.named_child_count != 1:
+        return None
+    text = key.named_children[0].text.decode("utf-8", errors="replace")
+    return text if text.replace("$", "_").isidentifier() else None
+
 
 def _callee_first_named(node):
     for child in node.children:
@@ -255,6 +281,8 @@ def _extract_call_name(node, source_bytes: bytes) -> Optional[str]:
       ``a?.M()``, ``this.m()``) -> the member
     - a generic, parenthesised or chained callee -> the name underneath
     - an element of a container (``fs[0]()``) -> the container
+    - a JavaScript member reached by a string that holds a name (``t["m"]()``)
+      -> the member
     - a function literal called in place, or a callee of a type not named in
       the tables above -> None
 
@@ -284,6 +312,10 @@ def _extract_call_name(node, source_bytes: bytes) -> Optional[str]:
                 member = current.child_by_field_name(_CALLEE_CONDITION_FIELD)
             current = member
         elif kind in _CALLEE_WRAPPER_FIELD:
+            if kind == _JS_KEYED_MEMBER:
+                keyed = _js_string_key_name(current)
+                if keyed is not None:
+                    return keyed
             field = _CALLEE_WRAPPER_FIELD[kind]
             inner = current.child_by_field_name(field) if field else None
             current = inner if inner is not None else _callee_first_named(current)
