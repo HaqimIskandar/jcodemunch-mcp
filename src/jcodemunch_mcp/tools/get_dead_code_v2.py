@@ -21,6 +21,7 @@ from typing import Optional
 
 from ..storage import IndexStore
 from ..parser.imports import resolve_specifier
+from ..parser.symbols import STATE_KINDS
 from ._utils import resolve_repo as _resolve_repo
 from ._call_graph import (
     LANGUAGES_CALLED_ACROSS_FILES_WITHOUT_AN_IMPORT,
@@ -375,6 +376,51 @@ def _signal_diagnostics(
     return diag
 
 
+#: Symbol kinds whose lines are code that runs outside every function: the
+#: initialiser of a constant, a variable, a class field or a property.
+#: Derived from the vocabulary (#806), so a state kind added there is read here.
+_DATA_KINDS = frozenset(STATE_KINDS)
+
+#: A quoted string that opens and closes on one line. A word inside one is
+#: data, not a name the code uses: without this a constant holding the text
+#: ``"name"`` counted as a use of every method called ``name``.
+_DOUBLE_QUOTED_RE = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"")
+_QUOTED_RE = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"" + "|" + r"'(?:[^'\\\n]|\\.)*'")
+
+#: Languages that write a string between single quotes. Anywhere else an
+#: apostrophe is something shorter (a Rust lifetime, a character), and pairing
+#: two of them removed the code between: ``static ONE: &'static str =
+#: helper('a');`` lost its call (review of L-169).
+_SINGLE_QUOTE_STRING_LANGUAGES = frozenset({
+    "python", "javascript", "typescript", "tsx", "vue", "ruby", "php", "perl",
+    "lua", "luau", "dart", "bash", "groovy", "gdscript", "r", "sql",
+})
+
+
+def _without_declared_name(line: str, declared: str) -> str:
+    """*line* with the first occurrence of *declared* blanked.
+
+    The line that declares ``size`` names it once as the thing declared. Left
+    in, every field would count as a use of the method that shares its name.
+    Once only: in ``static int size = size();`` the second is a call.
+
+    A name that is not a plain identifier (Ruby's ``@@after_reload``) is
+    blanked where it is written, sigil and all; left in, the word behind
+    the sigil counted as a use of the method ``after_reload``.
+    """
+    if not declared:
+        return line
+    if _IDENT_ONLY_RE.fullmatch(declared) is None:
+        at = line.find(declared)
+        if at < 0:
+            return line
+        return line[:at] + " " * len(declared) + line[at + len(declared):]
+    for match in _IDENT_RE.finditer(line):
+        if match.group(0) == declared:
+            return line[: match.start()] + " " * len(declared) + line[match.end():]
+    return line
+
+
 def _sweep_module_level_callers(
     index,
     store,
@@ -425,13 +471,40 @@ def _sweep_module_level_callers(
     residue_words_cache: dict[str, Optional[FileWords]] = {}
 
     def _residue_text(file_path: str) -> str:
-        """File text with every symbol's line span removed."""
+        """File text with the lines of every function, class and type removed.
+
+        ⚠⚠ **A constant, variable, field or property is a symbol too, and its
+        lines ARE code outside every function.** This removed every symbol's
+        span, so the right-hand side of ``ONE = helper()`` and every entry of
+        a dispatch table was taken out before it was read, and the function
+        named only there read ``no_callers`` (LEDGER L-169). Such a symbol's
+        lines are kept, with the name it declares blanked (``int size;`` is
+        not a use of ``size()``) and what sits inside quotes on one line
+        removed (``NAMES = ["helper"]`` is text).
+        ⚠⚠ **A line a function or method holds stays out, whichever symbol
+        wraps the other**: a function's body is answered by its call
+        references, and read as text every property access in it
+        (``b.size``) would count as a call of a method of that name. A
+        constant whose initialiser holds functions that are symbols is read
+        around them. Without this, zod lost 107 more rows.
+        ⚠ A function written inside an initialiser that is NOT a symbol of
+        its own (an unnamed handler in a table) is read as text with it:
+        nothing else reads it, and what it calls was invisible before.
+        ⚠ Text, not calls. On a kept line every word counts: a comment, a
+        string over several lines, an object key or keyword argument
+        (``size: 3``, ``name=1``), a type annotation (``x: T | None``) and a
+        modifier (``readonly``) all name a function or a class of that
+        word. Toward not reporting; LEDGER L-170.
+        """
         if file_path in residue_text_cache:
             return residue_text_cache[file_path]
         content = store.get_file_content(owner, name, file_path) or ""
         if content:
             lines = content.splitlines()
             covered = bytearray(len(lines))
+            in_function = bytearray(len(lines))
+            data: list[tuple[int, int, str]] = []
+            quoted = _DOUBLE_QUOTED_RE
             for s in symbols_by_file.get(file_path, ()):
                 line = s.get("line") or 0
                 if line <= 0:
@@ -442,8 +515,27 @@ def _sweep_module_level_callers(
                     continue
                 start = max(0, line - 1)
                 end = min(len(lines), s.get("end_line") or line)
-                if end > start:
-                    covered[start:end] = b"\x01" * (end - start)
+                if end <= start:
+                    continue
+                kind = s.get("kind")
+                if (s.get("language") or "") in _SINGLE_QUOTE_STRING_LANGUAGES:
+                    quoted = _QUOTED_RE
+                if kind in _DATA_KINDS:
+                    data.append((start, end, s.get("name") or ""))
+                    continue
+                covered[start:end] = b"\x01" * (end - start)
+                if kind in ("function", "method"):
+                    in_function[start:end] = b"\x01" * (end - start)
+            # Second, so a field's lines come back out of its class's span.
+            kept = bytearray(len(lines))
+            for start, end, declared in data:
+                if not in_function[start]:
+                    lines[start] = _without_declared_name(lines[start], declared)
+                for i in range(start, end):
+                    if not kept[i] and not in_function[i]:
+                        kept[i] = 1
+                        covered[i] = 0
+                        lines[i] = quoted.sub(" ", lines[i])
             content = "\n".join(
                 ln for i, ln in enumerate(lines) if not covered[i]
             )
