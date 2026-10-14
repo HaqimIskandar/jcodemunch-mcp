@@ -1209,7 +1209,19 @@ def _extract_vue_imports(content: str) -> list[dict]:
 # character of the run. Each is one C call that no parse budget interrupts:
 # 100 KB of `a` took minutes.
 _ASPX_DIRECTIVE = re.compile(r"<%@\s*(\w+)\b((?:[^%<]|%(?!>)|<(?!%))*)%>", re.DOTALL)
-_ASPX_ATTR = re.compile(r'(?<![\w:.\-])(\w[\w:.\-]*)\s*=\s*"([^"]*)"')
+# ASP.NET's parser takes a double-quoted, single-quoted or unquoted value. An
+# unquoted one must end at a delimiter, so `Title= CodeFile="x"` does not read
+# `CodeFile` as Title's value; in a tag it also stops at the `/` of `/>`, while
+# a directive value may be a path.
+_ASPX_VALUE = r"""(?:"([^"]*)"|'([^']*)'|([^\s"'<>%=]+)(?=\s|$))"""
+_ASPX_TAG_VALUE = r"""(?:"([^"]*)"|'([^']*)'|([^\s"'<>%=/]+)(?=[\s/>]|$))"""
+_ASPX_ATTR = re.compile(r"(?<![\w:.\-])(\w[\w:.\-]*)\s*=\s*" + _ASPX_VALUE)
+
+
+def _aspx_attr_pairs(pattern: re.Pattern, text: str):
+    """(name, value) for each match of an attribute pattern ending in `_ASPX_VALUE`."""
+    for name, dq, sq, bare in pattern.findall(text):
+        yield name, dq or sq or bare
 
 _ASPX_MARKUP_SUFFIXES = (".aspx", ".ascx", ".master", ".asax", ".ashx", ".asmx")
 
@@ -1253,10 +1265,40 @@ def _aspx_tags(content: str):
             j = close + 2
 
 
-_ASPX_RUNAT_SERVER = re.compile(r'runat\s*=\s*"server"', re.IGNORECASE)
-# The lookbehind makes `on...` the attribute's whole name: with `\b` alone,
-# `data-onclick="Foo"` and `aria-onx="Bar"` named server handlers.
-_ASPX_EVENT_ATTR = re.compile(r'(?<![\w:.\-])(on[a-z]+)\s*=\s*"([^"]*)"', re.IGNORECASE)
+_ASPX_TAG_ATTR = re.compile(r"(?<![\w:.\-])(\w[\w:.\-]*)\s*=\s*" + _ASPX_TAG_VALUE)
+# The whole attribute name: `data-onclick="Foo"` names no server handler.
+_ASPX_EVENT_NAME = re.compile(r"on[a-z]+", re.IGNORECASE)
+
+
+def _without_inline_blocks(text: str) -> str:
+    """`text` with each closed `<%...%>` replaced by a space; a scan, so linear."""
+    parts: list[str] = []
+    i = 0
+    while (start := text.find("<%", i)) >= 0:
+        close = text.find("%>", start + 2)
+        if close < 0:
+            break
+        parts.append(text[i:start])
+        parts.append(" ")
+        i = close + 2
+    parts.append(text[i:])
+    return "".join(parts)
+
+
+def _aspx_tag_attrs(raw: str) -> list[tuple[str, str]]:
+    """(name, value) for each attribute of one tag, left to right.
+
+    One pass consumes each quoted value whole, so `ToolTip="use OnClick=X"`
+    names no handler and opens no `runat` gate. Inline blocks are blanked first:
+    their quotes (`Text="<%# Eval("Id") %>"`) would otherwise shift the pass.
+    """
+    return list(_aspx_attr_pairs(_ASPX_TAG_ATTR, _without_inline_blocks(raw)))
+
+
+def _aspx_runat_server(attrs: list[tuple[str, str]]) -> bool:
+    return any(n.lower() == "runat" and v.lower() == "server" for n, v in attrs)
+
+
 # OnClient* handlers are JavaScript, not codebehind methods.
 _ASPX_CLIENT_EVENT_PREFIX = "onclient"
 # Bare method names only; databound expressions are not handler references.
@@ -1278,9 +1320,12 @@ def _aspx_handler_names(content: str) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
     for raw in _aspx_tags(content):
-        if not _ASPX_RUNAT_SERVER.search(raw):
+        attrs = _aspx_tag_attrs(raw)
+        if not _aspx_runat_server(attrs):
             continue
-        for attr_name, value in _ASPX_EVENT_ATTR.findall(raw):
+        for attr_name, value in attrs:
+            if not _ASPX_EVENT_NAME.fullmatch(attr_name):
+                continue
             if attr_name.lower().startswith(_ASPX_CLIENT_EVENT_PREFIX):
                 continue
             value = value.strip()
@@ -1317,7 +1362,7 @@ def _extract_aspx_imports(content: str) -> list[dict]:
     handlers = None  # sorted handler names, found once
     for m in _ASPX_DIRECTIVE.finditer(content):
         name = m.group(1).lower()
-        attrs = {k.lower(): v for k, v in _ASPX_ATTR.findall(m.group(2))}
+        attrs = {k.lower(): v for k, v in _aspx_attr_pairs(_ASPX_ATTR, m.group(2))}
 
         if name in ("page", "control", "master", "application", "webservice", "webhandler"):
             code = attrs.get("codebehind") or attrs.get("codefile") or attrs.get("src")

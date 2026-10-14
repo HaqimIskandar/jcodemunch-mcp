@@ -632,7 +632,12 @@ INDEX_VERSION = 17
 #   continued with a backslash, records the names it imports. It recorded
 #   none, so `find_references` missed every name imported that way. No symbol
 #   id moves; only `files.imports` changes, on UNCHANGED content.
-PARSER_GENERATION = 19
+#
+# 20 (follow-up to #1012): a Web Forms attribute value may be single-quoted or
+#   unquoted. A page whose directive or server control uses either form gains
+#   its codebehind and handler edges, its control symbols and its server-script
+#   symbols, on UNCHANGED content.
+PARSER_GENERATION = 20
 
 
 @dataclass(frozen=True)

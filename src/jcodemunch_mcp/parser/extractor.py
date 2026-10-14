@@ -9573,8 +9573,15 @@ def _parse_ejs_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
 # The `\b` and the lookbehind keep a long run of name characters from being
 # re-read from every position (see `_ASPX_DIRECTIVE` in imports.py).
 _ASPX_DIRECTIVE_RE = re.compile(rb"<%@\s*(\w+)\b((?:[^%<]|%(?!>)|<(?!%))*)%>", re.DOTALL)
+# Double-quoted, single-quoted or unquoted, as ASP.NET's parser accepts (see
+# `_ASPX_VALUE` in imports.py): an unquoted value ends at a delimiter, and in a
+# tag also at the `/` of `/>`.
+_ASPX_ATTR_NAME_RE = rb"(?<![\w\x80-\xff:.\-])([\w\x80-\xff][\w\x80-\xff:.\-]*)\s*=\s*"
 _ASPX_ATTR_RE = re.compile(
-    rb'(?<![\w\x80-\xff:.\-])([\w\x80-\xff][\w\x80-\xff:.\-]*)\s*=\s*"([^"]*)"'
+    _ASPX_ATTR_NAME_RE + rb"""(?:"([^"]*)"|'([^']*)'|([^\s"'<>%=]+)(?=\s|$))"""
+)
+_ASPX_TAG_ATTR_RE = re.compile(
+    _ASPX_ATTR_NAME_RE + rb"""(?:"([^"]*)"|'([^']*)'|([^\s"'<>%=/]+)(?=[\s/>]|$))"""
 )
 # Any tag prefix: <%@ Register TagPrefix= %> lets a project define its own.
 # Attributes may hold quoted HTML (`ErrorMessage="<br>..."`) or an inline
@@ -9585,7 +9592,24 @@ _ASPX_CONTROL_RE = re.compile(
     rb"<(\w+):(\w+)\b((?:\"[^\"]*\"|'[^']*'|" + _ASPX_INLINE_BLOCK + rb"|[^<>\"'])*)>",
     re.IGNORECASE,
 )
-_ASPX_RUNAT_SERVER_RE = re.compile(rb'runat\s*=\s*"server"', re.IGNORECASE)
+_ASPX_INLINE_BLOCK_RE = re.compile(_ASPX_INLINE_BLOCK)
+
+
+def _aspx_tag_attr_pairs(raw: bytes) -> list[tuple[bytes, bytes]]:
+    """(name, value) for each attribute of one tag, left to right.
+
+    One pass consumes each quoted value whole, so `ToolTip="set runat=server"`
+    opens no gate; inline blocks are blanked first so their quotes cannot shift
+    the pass (see `_aspx_tag_attrs` in imports.py).
+    """
+    blanked = _ASPX_INLINE_BLOCK_RE.sub(b" ", raw)
+    return [(k, dq or sq or bare) for k, dq, sq, bare in _ASPX_TAG_ATTR_RE.findall(blanked)]
+
+
+def _aspx_runat_server(pairs: list[tuple[bytes, bytes]]) -> bool:
+    return any(k.lower() == b"runat" and v.lower() == b"server" for k, v in pairs)
+
+
 # `</script\b[^<>]*>`, not `</script>`, to satisfy CodeQL py/bad-tag-filter.
 _ASPX_SCRIPT_OPEN_TAG_RE = re.compile(rb"<script\b([^<>]*)>", re.IGNORECASE)
 _ASPX_SCRIPT_OPEN_RE = re.compile(rb"<script\b", re.IGNORECASE)
@@ -9609,7 +9633,7 @@ def _aspx_server_scripts(source_bytes: bytes):
         if opened is None:
             return
         pos = opened.end()
-        if not _ASPX_RUNAT_SERVER_RE.search(opened.group(1)):
+        if not _aspx_runat_server(_aspx_tag_attr_pairs(opened.group(1))):
             continue
         following = _ASPX_SCRIPT_OPEN_RE.search(source_bytes, pos)
         limit = following.start() if following else len(source_bytes)
@@ -9650,7 +9674,10 @@ def _parse_aspx_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
         return raw.decode("utf-8", errors="replace")
 
     def _attrs(raw: bytes) -> dict[str, str]:
-        return {_text(k).lower(): _text(v) for k, v in _ASPX_ATTR_RE.findall(raw)}
+        return {
+            _text(k).lower(): _text(dq or sq or bare)
+            for k, dq, sq, bare in _ASPX_ATTR_RE.findall(raw)
+        }
 
     def _line_for_offset(offset: int) -> int:
         return bisect.bisect_left(newlines, offset) + 1
@@ -9716,10 +9743,10 @@ def _parse_aspx_symbols(source_bytes: bytes, filename: str) -> list[Symbol]:
     seen_ids: set[str] = set()
     for m in _ASPX_CONTROL_RE.finditer(source_bytes):
         parse_budget.checkpoint()
-        attrs_raw = m.group(3) or b""
-        if not _ASPX_RUNAT_SERVER_RE.search(attrs_raw):
+        pairs = _aspx_tag_attr_pairs(m.group(3) or b"")
+        if not _aspx_runat_server(pairs):
             continue
-        attrs = _attrs(attrs_raw)
+        attrs = {_text(k).lower(): _text(v) for k, v in pairs}
         control_id = attrs.get("id")
         if not control_id or control_id in seen_ids:
             continue
