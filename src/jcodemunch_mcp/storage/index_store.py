@@ -650,7 +650,12 @@ INDEX_VERSION = 17
 #   AL `<Summary></Summary>` or `<summary/>` stub loses its docstring here, so
 #   with AI enabled it costs one summarizer call on this re-parse, as a fresh
 #   index would.
-PARSER_GENERATION = 21
+#
+# 22: a T-SQL/Sybase stored procedure or trigger is a symbol (recovered by
+#   source scan), a bracket-quoted name is `schema.name`, and a SQL table,
+#   view or index has its own kind instead of `type`. ⚠⚠ Symbol ids MOVE:
+#   `type` -> `table`/`view`/`index`, and `dbo].[X` -> `dbo.X`.
+PARSER_GENERATION = 22
 
 
 @dataclass(frozen=True)
