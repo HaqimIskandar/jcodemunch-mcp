@@ -655,7 +655,12 @@ INDEX_VERSION = 17
 #   source scan), a bracket-quoted name is `schema.name`, and a SQL table,
 #   view or index has its own kind instead of `type`. ⚠⚠ Symbol ids MOVE:
 #   `type` -> `table`/`view`/`index`, and `dbo].[X` -> `dbo.X`.
-PARSER_GENERATION = 22
+#
+# 23: a SQL file is parsed one batch (`GO` / `/`) at a time, so one
+#   unparseable statement no longer loses every object after it, and named
+#   constraints, Sybase rules, defaults and `sp_addtype` types are symbols.
+#   ⚠⚠ The rows change on UNCHANGED content: objects that were lost appear.
+PARSER_GENERATION = 23
 
 
 @dataclass(frozen=True)

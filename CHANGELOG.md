@@ -75,6 +75,45 @@ graph. The guard that pinned `KIND_ORDER[-1] == "variable"` now pins the
 pre-existing prefix, because pinning the tail of an append-only tuple fails
 the next correct append, while a prefix pin still catches a reorder.
 
+### Fixed - one SQL statement the grammar could not parse lost every object after it, and a named constraint was no symbol (#1081, @outoftheblue9)
+
+The derekstride grammar does not skip what it cannot parse: it opens an
+`ERROR` node that swallows every statement after it, so one SQLCMD
+`$(Var)`, `ALTER TABLE`, `IF NOT EXISTS (...)` guard or BETWEEN in a
+table-level CHECK cost the rest of the file. A script is now parsed one
+batch at a time (`GO`, `GO N`, `GO;`, and Oracle's lone `/`), so an
+unparseable statement costs exactly its own batch; coordinates are stamped
+back into whole-file space. ⚠ Rewriting `GO` to `;` is NOT enough, because
+an ERROR node spans a substituted terminator. A dialect with no separator
+(DB2) gets a second pass per batch with routine bodies blanked, UNIONed
+with the first, because either pass alone loses objects the other finds;
+the two are merged on coordinates, not ids. Within a batch, `ALTER TABLE`,
+`IF [NOT] EXISTS (...)`, `CONSTRAINT x CHECK (...)` and `[Ident]` are
+blanked or rewritten in a LENGTH-PRESERVING copy handed only to the
+grammar, so every offset still slices the original source. `constraint`
+joins `KIND_ORDER` (appended): PK, FK, UNIQUE, CHECK and DEFAULT, from
+`ALTER TABLE ... ADD CONSTRAINT` and inline in `CREATE TABLE`, with an
+unnamed FK recovered as `FK_<table>_<target>`. A constraint's `parent` is
+its table's symbol id when the table is defined in the same file, else
+`None`, the rule triggers follow, and the table is named in the signature.
+Sybase ASE `CREATE RULE`/`CREATE DEFAULT` are `constraint`s and
+`sp_addtype` names are `type`s. `SET QUOTED_IDENTIFIER OFF` is tracked, so a
+double-quoted string is no longer read as source. `CREATE FUNCTION` with a
+`BEGIN...END` body is recovered by the routine scan when the grammar cannot
+parse it; a function the grammar parsed keeps the grammar's symbol. ⚠ The
+`kind` enum in `search_symbols`' input schema grows by one entry, and under
+`compact_schemas` it is demoted to a described string like `language`,
+because the SQL kinds pushed `core_compact` past its 4,000-token ceiling
+(4,002 with the enum kept). With the demotion `core_compact` measures 3,948
+tokens and the `full` list 23,928, from `benchmarks/harness/capture_schema_baseline.py`
+on this branch; an unknown kind is still refused server-side with the valid list.
+`PARSER_GENERATION` 22 -> 23: the rows change on UNCHANGED content. Tested
+against vendored public corpora (AdventureWorks, Chinook, Sakila, sqlfluff
+T-SQL fixtures; MIT / BSD-2-Clause, provenance and sha256 in
+`tests/fixtures/sql_corpora/SOURCES.md` and `public_sql_corpora.json`) and a
+synthetic Sybase ASE schema; `benchmarks/remeasure_sql_corpora.py`
+regenerates the pinned counts.
+
 ## [1.108.363] - 2026-10-14 - init writes hooks that run the install you ran, not the first one on PATH
 
 ### Fixed - `init` writes hooks that run the install you ran, not the first one on PATH
