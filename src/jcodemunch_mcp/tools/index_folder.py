@@ -46,6 +46,7 @@ from ..security import (
     is_generated_migrations_directory,
     SKIP_FILES
 )
+from .. import path_prefix
 from ..storage import IndexStore
 from ..storage.sqlite_store import PROVIDERS_CUT_KEY
 from ..storage.git_root import (
@@ -437,7 +438,7 @@ class _IndexFilters:
     bundle rather than baked into it.
     """
     root: Path
-    root_prefix: str         # str(root) + os.sep
+    root_prefix: str         # path_prefix.dir_prefix(str(root))
     root_str_norm: str       # os.path.normcase(str(root))
     root_prefix_norm: str    # os.path.normcase(root_prefix)
     follow_symlinks: bool = False
@@ -467,6 +468,10 @@ def _config_skip_flags(repo: str) -> dict:
     }
 
 
+# L-197: the containment prefix comes from the one rule (path_prefix.py).
+_dir_prefix = path_prefix.dir_prefix
+
+
 def _build_index_filters(
     root: Path,
     *,
@@ -487,7 +492,7 @@ def _build_index_filters(
     ``root`` must already be resolved by the caller.
     """
     root_str = str(root)
-    root_prefix = root_str + os.sep
+    root_prefix = _dir_prefix(root_str)
     return _IndexFilters(
         root=root,
         root_prefix=root_prefix,
@@ -1029,7 +1034,7 @@ def _rel_to_root(abs_path: Path, root: Path) -> Optional[str]:
         # Last resort: normcase both (Windows drive-letter/short-name casing).
         r_norm = os.path.normcase(str(root_resolved))
         p_norm = os.path.normcase(str(resolved))
-        prefix = r_norm if r_norm.endswith(os.sep) else r_norm + os.sep
+        prefix = _dir_prefix(r_norm)
         if p_norm.startswith(prefix):
             return str(resolved)[len(prefix):].replace("\\", "/")
     except OSError:
@@ -1367,13 +1372,7 @@ def discover_local_files(
     # the walk below (P8: single os.walk pass instead of two).
     gitignore_str_specs: list[tuple[str, pathspec.PathSpec]] = []
 
-    # Pre-compute root path strings (root is already resolved above).
-    # Normalized variants use os.path.normcase for case-insensitive comparison
-    # on Windows (no-op on POSIX).
-    root_str = str(root)
-    root_prefix = root_str + os.sep
-    root_str_norm = os.path.normcase(root_str)
-    root_prefix_norm = os.path.normcase(root_prefix)
+    root_str = str(root)  # root is already resolved above
 
     # Merge env-var global, project-level, and per-call patterns, then build
     # spec. Passing repo=str(folder_path) so .jcodemunch.jsonc overrides land
@@ -1495,7 +1494,7 @@ def discover_local_files(
             try:
                 content = gitignore_path.read_text(encoding="utf-8", errors="replace")
                 spec = pathspec.PathSpec.from_lines("gitignore", content.splitlines())
-                gitignore_str_specs.append((str(dpath.resolve()) + os.sep, spec))
+                gitignore_str_specs.append((_dir_prefix(str(dpath.resolve())), spec))
             except Exception:
                 pass
 
@@ -1955,7 +1954,7 @@ def index_folder(
                         "gitignore", _gi_content.splitlines()
                     )
                     _fast_gitignore_specs.append(
-                        (str(folder_path.resolve()) + os.sep, _gi_spec)
+                        (_dir_prefix(str(folder_path.resolve())), _gi_spec)
                     )
             except Exception:
                 pass
@@ -2586,6 +2585,12 @@ def index_folder(
         # ── Branch-aware indexing ──
         # Detect current git branch. If a base index exists and we're on a
         # different branch, save as a branch delta instead of overwriting the base.
+        # ⚠⚠ DORMANT (L-196, jjg 2026-10-15): no full save records the base's
+        # branch, so `_base_branch` falls back to the current one and delta mode
+        # never starts; and no reader composes a branch view. The index follows
+        # the checked-out tree, which is what every reader assumes
+        # (tests/test_index_follows_the_checked_out_tree.py). Enabling the
+        # writer without the read path would serve a stale base on a branch.
         _current_branch = _get_git_branch(folder_path)
         _is_branch_delta = False
         _base_branch: str = ""
