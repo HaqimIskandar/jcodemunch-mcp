@@ -28,12 +28,13 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .policy import active_policy, installed_policy_drift, policy_block_span
+from .policy import active_policy, installed_policy_drift, policy_block_span, policy_for, policy_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -75,21 +76,24 @@ def policy_files() -> list[tuple[str, Path]]:
     return out
 
 
-def plan_refresh(path: Path) -> dict:
+def plan_refresh(path: Path, policy: str | None = None, label: str = "this version") -> dict:
     """What a refresh of *path* would do. Reads only.
 
     ``{"state": "no_file" | "no_block" | "current" | "unreadable"}``, or
     ``{"state": "differs", "lines_differing", "old_text", "new_text", "diff"}``
     where ``new_text`` is the file with only the block replaced, in the file's
-    own line endings.
+    own line endings. *policy* is the block to write, this process's
+    ``active_policy()`` when omitted; *label* names it in the diff header.
     """
+    if policy is None:
+        policy = active_policy()
     if not path.is_file():
         return {"state": "no_file"}
     try:
         old_text = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         return {"state": "unreadable", "reason": str(exc)}
-    drift = installed_policy_drift(old_text)
+    drift = installed_policy_drift(old_text, policy)
     if drift is None:
         return {"state": "no_block"}
     if drift["state"] == "current":
@@ -111,7 +115,7 @@ def plan_refresh(path: Path) -> dict:
     trailing: list[str] = []
     while block and not block[-1].strip():
         trailing.insert(0, block.pop())
-    body = active_policy().replace("\r\n", "\n")
+    body = policy.replace("\r\n", "\n")
     if not body.endswith("\n"):
         body += "\n"
     body = body.replace("\n", newline)
@@ -120,7 +124,7 @@ def plan_refresh(path: Path) -> dict:
         body = body[: -len(newline)]  # the file had no final newline; it still has none
     new_text = bom + "".join(raw[:start]) + body + "".join(trailing) + "".join(raw[end:])
 
-    after = installed_policy_drift(new_text)
+    after = installed_policy_drift(new_text, policy)
     if after != {"state": "current"}:
         # Never write a file this module cannot then call current.
         return {"state": "unreadable", "reason": f"the replacement does not read as current ({after})"}
@@ -129,7 +133,7 @@ def plan_refresh(path: Path) -> dict:
             [ln.rstrip("\r\n") + "\n" for ln in raw[start:end]],
             [ln + "\n" for ln in body.replace("\r\n", "\n").rstrip("\n").split("\n")],
             fromfile=f"{path} (installed)",
-            tofile=f"{path} (this version)",
+            tofile=f"{path} ({label})",
         )
     )
     return {
@@ -176,15 +180,98 @@ def apply_refresh(path: Path, plan: dict, *, now: datetime | None = None) -> Pat
     return backup
 
 
-def run_refresh(*, yes: bool = False, dry_run: bool = False, out=print) -> int:
-    """`claude-md --refresh`. Exit status: 0 done or nothing to do, 1 a file could not be read or written."""
+_TOOL_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]{0,39}")
+_SURFACES = ("full", "counter")
+
+
+def server_policy() -> tuple[dict | None, str]:
+    """The policy the server selected when it last said a block differs, from the notice's marker (L-185).
+
+    ``({"text", "version", "shown_at"}, "")``, or ``(None, why)``. The server
+    picks its policy from ITS environment and the command from the shell's, so
+    a setting set only in the MCP client's environment makes the two differ.
+    ⚠⚠ The marker records the server's INPUTS (surface, tool names), never
+    text: the policy is rebuilt here by ``policy_for`` from THIS version's own
+    text, so a marker can choose which of jcodemunch's policies is written and
+    cannot supply one (review of L-185: a recorded text with a recomputed
+    digest wrote arbitrary lines). A stale server's inputs give this version's
+    policy for its settings, which it serves once restarted.
+    """
+    try:
+        marker = _marker_path()
+        if not marker.is_file():
+            return None, "nothing is recorded"
+        rec = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.debug("policy notice marker unreadable", exc_info=True)
+        return None, "the record is unreadable"
+    inputs = rec.get("policy_inputs") if isinstance(rec, dict) else None
+    if not isinstance(inputs, dict):
+        return None, "the record holds no policy settings (an older version wrote it)"
+    surface, tools = inputs.get("surface"), inputs.get("tools")
+    if surface not in _SURFACES:
+        return None, "the recorded tool surface is not one this version knows"
+    if tools is not None and not (
+        isinstance(tools, list) and all(isinstance(t, str) and _TOOL_NAME_RE.fullmatch(t) for t in tools)
+    ):
+        return None, "the recorded tool names are not tool names"
+    if tools == []:
+        return None, "the recorded tool list is empty, which no server records"
+    # ⚠ The command's output is read by agents: a marker value reaches it only
+    # in a shape this version wrote (review of L-185: a version string carried
+    # an instruction line and a shown_at an escape sequence).
+    version = rec.get("version")
+    if not (isinstance(version, str) and _VERSION_RE.fullmatch(version)):
+        version = "unknown"
+    shown_at = rec.get("shown_at")
+    try:
+        shown_at = datetime.fromisoformat(shown_at).isoformat(timespec="seconds") if isinstance(shown_at, str) else None
+    except ValueError:
+        shown_at = None
+    return {"text": policy_for(surface, tools), "version": version, "shown_at": shown_at or "an unknown time"}, ""
+
+
+def matches_server_policy(text: str) -> bool | None:
+    """Does the policy block in *text* match the one the server recorded? ``None``: nothing usable is recorded."""
+    rec, _why = server_policy()
+    if rec is None:
+        return None
+    return installed_policy_drift(text, rec["text"]) == {"state": "current"}
+
+
+def run_refresh(*, yes: bool = False, dry_run: bool = False, match_server: bool = False, out=print) -> int:
+    """`claude-md --refresh`. Exit status: 0 done or nothing to do, 1 a file could not be read or written,
+    or ``--match-server`` had no usable record."""
+    from .. import __version__
     from .init import ensure_config_loaded
 
     ensure_config_loaded()
+    rec, why = server_policy()
+    label = "this version"
+    if match_server:
+        if rec is None:
+            out(f"--match-server: not written: {why}. The server records its settings when its first "
+                "resolve_repo answer says a block differs.")
+            return 1
+        policy = rec["text"]
+        label = f"this version, for the server's settings of {rec['shown_at']}"
+        out(f"Writing this version's policy for the settings the server had when it last said a block differs "
+            f"({rec['shown_at']}).")
+        if rec["version"] != __version__:
+            out(f"That server ran version {rec['version'] or 'unknown'} and this is {__version__}; "
+                "it reads the block as current once it is restarted.")
+    else:
+        policy = active_policy()
+        if rec is not None and rec["text"] != policy:
+            out(f"When the jcodemunch server last said a block differs ({rec['shown_at']}), it selected a different "
+                "policy than this shell does. If a setting that chooses it (tool_surface, tool_profile or "
+                "disabled_tools) differs between the MCP client's environment and this shell, --match-server "
+                "writes the server's policy instead; the record may also be older than a change you made since.")
     status = 0
     acted = False
     for scope, path in policy_files():
-        plan = plan_refresh(path)
+        plan = plan_refresh(path, policy, label)
         state = plan["state"]
         if state in ("no_file", "no_block", "current"):
             continue
@@ -193,7 +280,8 @@ def run_refresh(*, yes: bool = False, dry_run: bool = False, out=print) -> int:
             out(f"{path}: cannot refresh: {plan['reason']}")
             status = 1
             continue
-        out(f"{path} ({scope}): the jcodemunch policy block differs from this version's "
+        whose = "this version's" if not match_server else "this version's for the server's settings"
+        out(f"{path} ({scope}): the jcodemunch policy block differs from {whose} "
             f"({plan['lines_differing']} line(s)). Everything outside the block stays as it is.")
         out(plan["diff"].rstrip("\n"))
         if dry_run:
@@ -229,8 +317,8 @@ def _marker_path() -> Path:
     return notice_marker_path(NOTICE_MARKER)
 
 
-def _policy_digest() -> str:
-    return hashlib.sha256(active_policy().encode("utf-8")).hexdigest()
+def _policy_digest(text: str | None = None) -> str:
+    return hashlib.sha256((active_policy() if text is None else text).encode("utf-8")).hexdigest()
 
 
 def policy_notice_for(name: str, result: object, *, tool: str = "resolve_repo", version: str = "") -> dict | None:
@@ -249,7 +337,9 @@ def policy_notice_for(name: str, result: object, *, tool: str = "resolve_repo", 
         return None
     NOTICE_STATE["checked"] = True
     try:
-        digest = _policy_digest()
+        inputs = policy_inputs()
+        policy_text = policy_for(**inputs)
+        digest = _policy_digest(policy_text)
         marker = _marker_path()
         if marker.is_file():
             try:
@@ -259,7 +349,7 @@ def policy_notice_for(name: str, result: object, *, tool: str = "resolve_repo", 
                 logger.debug("policy notice marker unreadable; saying it again", exc_info=True)
         files = []
         for _scope, path in policy_files():
-            plan = plan_refresh(path)
+            plan = plan_refresh(path, policy_text)
             if plan["state"] == "differs":
                 files.append({"path": str(path), "lines_differing": plan["lines_differing"]})
     except Exception:
@@ -282,6 +372,10 @@ def policy_notice_for(name: str, result: object, *, tool: str = "resolve_repo", 
                     "shown_at": datetime.now(timezone.utc).isoformat(),
                     "tool": name,
                     "policy_digest": digest,
+                    # What THIS process chose its policy from, so `--match-server`
+                    # can rebuild it when the shell chooses another (L-185).
+                    # Settings, never text: see `server_policy`.
+                    "policy_inputs": inputs,
                     "version": version,
                 }
             ),

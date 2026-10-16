@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed - `claude-md --refresh` can write the policy your server uses
+
+The server picks the agent policy from the settings in your MCP client's
+environment, and `claude-md --refresh` picks it from your shell's. With a
+setting that chooses the policy (`JCODEMUNCH_TOOL_SURFACE`, the tool profile,
+disabled tools) set only for the client, the server said your CLAUDE.md block
+differed, the command wrote the policy for the shell's settings, and the
+server still read the block as differing. Neither side said why, and
+`config --check` had the same blind spot (L-185). The server's notice now
+records the settings it chose its policy from: the tool surface and the names
+of the tools it offered. The command says when those give a different policy
+from the one it would write, and `--match-server` writes this version's policy
+for the server's settings, with the same diff, question and backup. The
+record holds settings, never text, so an edited record can only choose which
+of jcodemunch's own policies is written; one it can't read writes nothing.
+`config --check` and `init` say when a block they read as differing matches
+the policy for the server's settings. SECURITY.md describes the marker's new field.
+
 ## [1.108.372] - 2026-10-16 - uninstall keeps your own section after the policy
 
 ### Fixed - `uninstall` no longer deletes your own section after the policy

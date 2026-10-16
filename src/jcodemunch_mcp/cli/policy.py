@@ -226,9 +226,32 @@ def active_policy() -> str:
     outright rather than being filtered down to the three surviving names --
     filtering a workflow away leaves an agent with no workflow at all.
     """
-    if _effective_tool_surface() == "counter":
+    return policy_for(**policy_inputs())
+
+
+def policy_inputs() -> dict:
+    """What THIS process's policy is chosen from: ``{"surface", "tools"}``.
+
+    ``tools`` is the sorted tool names the policy is filtered to, or ``None``
+    for no filtering (and always ``None`` under ``counter``, whose policy is
+    not filtered). ``claude-md --refresh --match-server`` rebuilds the server's
+    policy from the inputs the server recorded, with this version's text, so a
+    record can choose WHICH of jcodemunch's policies is written and never
+    supply text of its own (review of L-185).
+    """
+    surface = _effective_tool_surface()
+    if surface == "counter":
+        return {"surface": "counter", "tools": None}
+    active = _get_active_tools()
+    # Any value but `counter` serves the full surface (CLI-AND-ENV: JCODEMUNCH_TOOL_SURFACE).
+    return {"surface": "full", "tools": None if active is None else sorted(active)}
+
+
+def policy_for(surface: str, tools) -> str:
+    """The policy for *surface*, filtered to *tools* (``None``: unfiltered). Pure; text is only ever ours."""
+    if surface == "counter":
         return _CLAUDE_MD_POLICY_COUNTER
-    return _filter_policy_for_tools(_CLAUDE_MD_POLICY, _get_active_tools())
+    return _filter_policy_for_tools(_CLAUDE_MD_POLICY, None if tools is None else set(tools))
 
 
 
@@ -249,7 +272,7 @@ def _normalise(lines) -> list[str]:
     return [ln.rstrip() for ln in lines if ln.strip()]
 
 
-def installed_policy_drift(text: str) -> dict | None:
+def installed_policy_drift(text: str, policy: str | None = None) -> dict | None:
     """Does the policy block in a CLAUDE.md match what this version installs? (#871)
 
     ``None`` when the text holds no policy block (nothing to compare: the
@@ -262,11 +285,15 @@ def installed_policy_drift(text: str) -> dict | None:
     not a difference; indentation is. ⚠ "differs" cannot tell an outdated block from one its owner
     edited on purpose; the caller must say so, and must never rewrite it
     (the ``surface_offer`` rule: a message, never a migration).
+
+    *policy* is the text to compare against, ``active_policy()`` when omitted;
+    ``claude-md --refresh --match-server`` passes the policy the server
+    recorded, which its environment may select differently (L-185).
     """
     installed = installed_policy_block(text)
     if installed is None:
         return None
-    current = _normalise(active_policy().splitlines())
+    current = _normalise((active_policy() if policy is None else policy).splitlines())
     if installed == current:
         return {"state": "current"}
     import difflib
