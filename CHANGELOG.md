@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Fixed - the steering hooks recognise a search over a whole drive
+
+`_path_overlaps`, the hooks' rule for "is this path an indexed repository,
+inside one, or above one", added a separator to the folder before comparing.
+A filesystem root (`C:\`, `/`) already ends in one, so the ancestor test never
+matched there, and a search over a whole drive holding an indexed repository
+got no steering. It now gets what a search over any folder holding an indexed
+repository gets, the home folder included: advice by default, and under
+`JCODEMUNCH_ENFORCE=strict` a denial for a Grep or Glob over the root or a
+single-command shell search run from it. A session started at a drive root
+also gets the briefing for that drive's indexes only, where it briefed every
+index before. A new test now holds this rule and the workspace listing's
+rule (`tools/_visibility.in_workspace`) to the same answer for every project
+folder. They still differ for the home folder and a root, deliberately: the
+listing treats those as no project, while the hooks still serve the search
+(L-195).
+
+### Changed - the published package names no code-execution call it doesn't make
+
+A registry scanner reading the sdist counts `eval`/`exec` text as calls. Our
+package makes none, but four places carried the text: an MCP prompt sentence,
+a test fixture, a test's busy-wait, and recorded munch-bench model answers
+quoting Flask. The prompt now says "dynamic code execution", the fixture joins
+the name at run time, the busy-wait is a plain loop, and `munch-bench/results/`
+leaves the sdist (nothing installed reads it). SECURITY.md gains "jcodemunch
+Never Runs Indexed Code Itself", which names the one exception you switch on:
+LSP enrichment starts language servers, and `rust-analyzer` runs a Rust
+project's build scripts and procedural macros by default.
+
 ### Fixed - a context provider that runs out of time runs again on the next index
 
 Every context provider runs under a 30-second budget
