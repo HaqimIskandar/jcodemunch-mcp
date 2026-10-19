@@ -10,6 +10,12 @@ survives `&limit=100`. Never re-publish on a zero-row read; fix the parse.
 Exit 1 unless a row with `server.version == X` exists, is marked latest, and
 its `packages[].version` advanced too.
 
+Each attempt first reads the one row for the version
+(`/v0/servers/<name>/versions/<v>`, C-27), which answered in about half the
+time of one search page in FINDINGS C-27's measurement. A pass there ends the
+run. A wrong row, a 404 or
+no answer falls through to the paged read, which decides.
+
 The read is retried, and the exit code says which thing went wrong (LEDGER
 L-96). 1: the registry ANSWERED and the row is wrong. `UNREADABLE` (75, the
 sysexits temporary-failure code): no attempt got an answer, which says nothing
@@ -35,6 +41,10 @@ UNREADABLE = 75
 
 MAX_PAGES = 50
 REQUEST_SECONDS = 30.0
+# The one-row read (FINDINGS C-27 carries the measurement): the paged search is
+# the slow read, and three release runs timed out on it alone. The row itself
+# took most of `REQUEST_SECONDS` after the 1.108.381 publish, so it gets more.
+VERSION_SECONDS = 60.0
 # The whole run, every attempt and every page. `release.yml`'s registry job is
 # cancelled at its `timeout-minutes`, and a cancelled job opens no issue at
 # all, so the script must finish, and say what it found, before that.
@@ -102,6 +112,30 @@ def fetch(name: str, deadline: float | None = None) -> list[dict]:
             raise ValueError(f"the cursor did not advance ({cursor!r})")
         seen.add(cursor)
     raise ValueError(f"more than {MAX_PAGES} pages")
+
+
+def fetch_version(name: str, version: str, deadline: float | None = None) -> list[dict]:
+    """The one row for `name` at `version`, as a one-element list (FINDINGS C-27).
+
+    The same nested `{server, _meta}` shape the search pages carry, so
+    `verdict` judges it unchanged. A body without a `server` object is no
+    answer, never a row.
+    """
+    url = (
+        f"{API}/{urllib.request.quote(name, safe='')}"
+        f"/versions/{urllib.request.quote(version, safe='')}"
+    )
+    timeout = VERSION_SECONDS
+    if deadline is not None:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("the time budget ran out before the version read")
+        timeout = min(VERSION_SECONDS, left)
+    with urllib.request.urlopen(url, timeout=timeout) as r:  # noqa: S310
+        data = json.load(r)
+    if not isinstance(data, dict) or not isinstance(data.get("server"), dict):
+        raise ValueError("the version read returned no server row")
+    return [data]
 
 
 def verdict(rows: list[dict], name: str, version: str) -> tuple[bool, list[str]]:
@@ -175,6 +209,33 @@ def main(argv=None) -> int:
                 break
             time.sleep(a.delay)
         made = attempt
+        # The one-row read first (C-27). It can only end the run EARLY, on a
+        # PASS: anything else (no answer, or an answer that does not pass)
+        # falls through to the full read, which stays the authority for every
+        # FAIL and every UNREADABLE, so neither verdict became easier to reach.
+        # Every line from this read starts "attempt N: version row:" and never
+        # decides the exit code (RUNBOOK 3a); a 404 is expected just after a
+        # publish, while the registry indexes the new version.
+        try:
+            ok, lines = _judge(
+                fetch_version(a.name, a.version, deadline), a.name, a.version
+            )
+            if ok:
+                # "PASS" stays the last line, which is what RUNBOOK 3a reads.
+                print(
+                    "\n".join(lines[:-1] + ["(read from the version row)", lines[-1]])
+                )
+                return 0
+            print(
+                f"attempt {attempt}: version row: {lines[-1]}; reading every page",
+                flush=True,
+            )
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            print(
+                f"attempt {attempt}: version row: no answer "
+                f"({type(exc).__name__}: {exc}); reading every page",
+                flush=True,
+            )
         try:
             rows = fetch(a.name, deadline)
             ok, lines = _judge(rows, a.name, a.version)
