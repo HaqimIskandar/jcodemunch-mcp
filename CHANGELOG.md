@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed - an index read back in the process that saved it keeps its ecosystem context (L-224)
+
+`save_index` puts the index it has just written into the in-process cache, so
+the next `load_index` skips the disk. It built that cached copy from its own
+hand-written symbol dict, which left out `ecosystem_context`, while every row
+read back from disk carries the field. So `load_index` in the same process
+returned symbols with no `ecosystem_context` key (the git blame or dbt text was
+gone) until a later write moved the .db mtime the cache compares. After a full
+`index_folder` that write is normally the coverage stamp. With
+`set_coverage` stubbed out, a read after `index_folder` on `main` returned the
+symbol without the key, and this fix returns the blame text. That is the most
+likely cause of the rare `KeyError: 'ecosystem_context'` two blame tests hit
+under load; the coverage write failing to move the mtime under load was not
+itself observed.
+
+`save_index` now serialises with `_symbol_to_dict`, the helper whose shape
+matches a row read from disk. `IndexStore._symbol_to_dict` gains the field too,
+for consistency only: nothing reads it there. `tests/test_a_saved_index_reads_back_as_stored.py` requires the cached
+copy to have the same keys and values as a disk read of the same index.
+
 ### Fixed - a summary written by another process reaches this one's searches
 
 The previous fix (L-226) told `search_symbols` to drop a repository's cached
