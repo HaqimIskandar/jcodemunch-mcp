@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Fixed - the steering hook's advice names tools the agent can call
+
+On the `counter` tool surface, which `init` installs by default, the client's
+tool list holds only the front door (`order`, `menu`, `route`) and every other
+action is reached as `order { "action": ... }`. The PreToolUse hook still told
+the agent to use tools by bare name, i.e. calls it could not make: on a Grep,
+Glob or search command it named `search_text`, `search_symbols`,
+`check_references`, `find_references`, `find_importers`, `get_file_tree` and
+`get_repo_outline`, and on a large Read it named `get_file_outline` and
+`get_symbol_source`, in both the advisory nudge and the strict-mode deny. The
+`CLAUDE.md` policy `init` writes already spoke in `order` calls; the hook was a
+second copy of the same guidance that never asked which surface it was on.
+Under `counter` every route now reads `order { "action": "...", "args": { ... } }`,
+the policy's own spelling, with a pointer to `menu` for argument templates; on
+`full` the names are unchanged. The hook reads the surface through
+`_common.tool_surface`, which applies `counter.resolve_tool_surface`, the
+authority the server uses (a blank env value is unset, an unknown one serves
+`full`); the session briefing read it the same way and now shares that one
+reader. It never builds the tool list or imports the server, because it runs on
+every tool call.
+`tests/test_steering_names_only_published_tools.py` drives every emitting path
+through `run_pretooluse` (Grep, Glob, Bash and Read, advisory and strict) and
+requires every catalog tool named as a direct call to be one the surface
+publishes; with only the Read change reverted it fails. A fresh interpreter
+checks that the hook path imports no server module.
+
 ## [1.108.388] - 2026-10-21 - the license names jMunch, LLC, and the product says "license"
 
 ### Changed - "license", spelled the American way, and a way forward for a rejected key
