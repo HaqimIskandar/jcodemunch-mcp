@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Changed - "license", spelled the American way, and a way forward for a rejected key
+
+The product said "licence" in places its buyers read: `init`'s closing line ("A
+commercial licence is $79") and `install-pack`'s "Upstream licence:" lines,
+plus docs, comments and test text. They now say "license" (J, 2026-10-20), which
+is also how the LICENSE file and every other line already spelled it.
+Identifiers are left as they are (`_LICENCE_LINES`, `licence_key_configured`, the
+`test_init_licence_line.py` file and its test names), because renaming them is
+a code change, not a spelling one; so are quotations of other people's words,
+released CHANGELOG blocks and history, test fixtures, and the dependency
+indexer's pattern that must still find a file named LICENCE.
+
+`jcodemunch-mcp license` with a key the license server rejects used to stop at
+"key not recognized by the license server", which left a paying customer with a
+typo, or a lapsed key, nowhere to go. It now adds "Check the key for a typo. If
+it should be valid, write to j@gravelle.us and we'll sort it out.", the address
+the site already lists. It is a support pointer, not a sales line, and it shows
+for a rejected key only.
+
 ### Changed - the license's copyright holder is jMunch, LLC (license version 1.2)
 
 `LICENSE` now reads "Copyright (c) 2024-2026 jMunch, LLC" in place of J.
